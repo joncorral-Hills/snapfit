@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapFit Admin</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <div class="header-inner">
+        <div class="logo-mark">🔩</div>
+        <div class="logo-text">
+          <span class="logo-name">SnapFit</span>
+          <span class="logo-tagline">Admin Panel</span>
+        </div>
+        <nav class="header-nav">
+          <a href="/" class="nav-link">← Back to App</a>
+        </nav>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+
+      {% if not authenticated %}
+      <!-- ── Login wall ──────────────────────────────────────────────────── -->
+      <div style="max-width:400px; margin:80px auto;">
+        <div class="section-label">Admin Access</div>
+        <h1 class="section-title" style="font-size:24px;">Sign In</h1>
+
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+
+        <div class="card">
+          <form method="POST" action="/admin/login">
+            <div class="form-group">
+              <label class="form-label" for="admin-password">Password</label>
+              <input type="password" id="admin-password" name="password"
+                     class="form-input" placeholder="Enter admin password"
+                     required autofocus />
+            </div>
+            <button type="submit" class="btn btn-primary" id="login-btn">
+              Sign In
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {% else %}
+      <!-- ── Admin dashboard ─────────────────────────────────────────────── -->
+      <div class="section-label">Admin</div>
+      <h1 class="section-title" style="font-size:26px;">Tool Database</h1>
+      <p class="section-sub">Add new tools or review existing ones.</p>
+
+      <!-- Add tool form -->
+      <div class="card" style="margin-bottom:32px;">
+        <div class="section-label" style="margin-bottom:20px;">Add New Tool</div>
+        <form method="POST" action="/admin/tools" id="add-tool-form">
+          <div class="admin-form-grid">
+            <div class="form-group">
+              <label class="form-label" for="at-brand">Brand</label>
+              <input type="text" id="at-brand" name="brand" class="form-input"
+                     placeholder="e.g. DeWalt" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-model">Model Name</label>
+              <input type="text" id="at-model" name="model_name" class="form-input"
+                     placeholder="e.g. DCD771 Drill/Driver" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-type">Tool Type</label>
+              <div class="select-wrapper">
+                <select id="at-type" name="tool_type" class="form-select" required>
+                  <option value="">— Select Type —</option>
+                  <option>Drill/Driver</option>
+                  <option>Impact Driver</option>
+                  <option>Impact Wrench</option>
+                  <option>Circular Saw</option>
+                  <option>Reciprocating Saw</option>
+                  <option>Jigsaw</option>
+                  <option>Angle Grinder</option>
+                  <option>Multi-Tool</option>
+                  <option>Sander</option>
+                  <option>Blower</option>
+                  <option>Other</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-width">Body Width (mm)</label>
+              <input type="number" step="0.1" id="at-width" name="body_width_mm"
+                     class="form-input" placeholder="e.g. 78.0" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-depth">Body Depth (mm)</label>
+              <input type="number" step="0.1" id="at-depth" name="body_depth_mm"
+                     class="form-input" placeholder="e.g. 215.0" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-height">Body Height (mm)</label>
+              <input type="number" step="0.1" id="at-height" name="body_height_mm"
+                     class="form-input" placeholder="e.g. 235.0" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-handle">Handle Diameter (mm)</label>
+              <input type="number" step="0.1" id="at-handle" name="handle_diameter_mm"
+                     class="form-input" placeholder="e.g. 48.0" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="at-weight">Weight (kg)</label>
+              <input type="number" step="0.01" id="at-weight" name="weight_kg"
+                     class="form-input" placeholder="e.g. 1.36" required />
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" id="add-tool-btn"
+                  style="margin-top:8px;">
+            Add Tool to Database
+          </button>
+        </form>
+      </div>
+
+      <!-- Tool list -->
+      <div class="card">
+        <div class="section-label" style="margin-bottom:16px;">
+          All Tools ({{ tools|length }})
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Brand</th>
+                <th>Model</th>
+                <th>Type</th>
+                <th>W mm</th>
+                <th>D mm</th>
+                <th>H mm</th>
+                <th>Handle Ø</th>
+                <th>kg</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for tool in tools %}
+              <tr>
+                <td>
+                  <span class="brand-tag {{ tool.brand | lower }}">{{ tool.brand }}</span>
+                </td>
+                <td>{{ tool.model_name }}</td>
+                <td style="color:var(--text-secondary)">{{ tool.tool_type }}</td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:13px">{{ tool.body_width_mm }}</td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:13px">{{ tool.body_depth_mm }}</td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:13px">{{ tool.body_height_mm }}</td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:13px">{{ tool.handle_diameter_mm }}</td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:13px">{{ tool.weight_kg }}</td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="8" style="text-align:center;color:var(--text-muted);padding:32px;">
+                  No tools yet. Add one above.
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">SnapFit Admin · Protected Area</div>
+  </footer>
+
+</body>
+</html>
