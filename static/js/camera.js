@@ -1,136 +1,109 @@
 /**
- * camera.js — SnapFit camera scan module
+ * camera.js — SnapFit 5-phase scan wizard
  *
- * Manages the full "Scan Your Tool" flow:
- *  1. Open modal → start getUserMedia stream (rear cam preferred on mobile)
- *  2. Draw animated guide overlay (dashed bounding rectangle)
- *  3. Capture → freeze frame to canvas
- *  4. POST base64 image to /api/analyze-tool-image
- *  5. Draw contour overlay on captured frame
- *  6. Populate editable dimension inputs
- *  7. "Use These Dimensions" → inject a synthetic tool object into the
- *     existing STL download flow in app.js without touching any existing code
+ * Phase 1 — Live camera  (#phase-live)
+ * Phase 2 — Analysis     (#phase-analysis)  POST /api/analyze-contour
+ * Phase 3 — Dot editor   (#phase-edit)       SVG draggable polygon
+ * Phase 4 — Scale input  (#phase-scale)
+ * Phase 5 — (STL preview, future)
  */
 
 /* ── DOM refs ─────────────────────────────────────────────────────────────── */
-const scanModal         = document.getElementById('scan-modal');
-const scanBackdrop      = document.getElementById('scan-backdrop');
-const scanBtn           = document.getElementById('scan-btn');
-const scanClose         = document.getElementById('scan-close');
-const scanVideo         = document.getElementById('scan-video');
-const guideCanvas       = document.getElementById('scan-guide');
-const captureCanvas     = document.getElementById('scan-capture');
-const contourCanvas     = document.getElementById('scan-contour');
-const overlayMsg        = document.getElementById('scan-overlay-msg');
+const scanModal    = document.getElementById('scan-modal');
+const scanBackdrop = document.getElementById('scan-backdrop');
+const scanBtn      = document.getElementById('scan-btn');
+const scanClose    = document.getElementById('scan-close');
+const overlayMsg   = document.getElementById('scan-overlay-msg');
 
-const ctrlsLive         = document.getElementById('scan-controls-live');
-const ctrlsAnalysis     = document.getElementById('scan-controls-analysis');
-const ctrlsResult       = document.getElementById('scan-controls-result');
+// Phase containers
+const phaseLive     = document.getElementById('phase-live');
+const phaseAnalysis = document.getElementById('phase-analysis');
+const phaseEdit     = document.getElementById('phase-edit');
+const phaseScale    = document.getElementById('phase-scale');
 
-const captureBtn        = document.getElementById('capture-btn');
-const retakeBtn         = document.getElementById('retake-btn');
-const useDimsBtn        = document.getElementById('use-dims-btn');
+// Phase-1 elements
+const scanVideo    = document.getElementById('scan-video');
+const analyzeBtn   = document.getElementById('analyze-btn');
 
-const scanDims          = document.getElementById('scan-dims');
-const scanWarning       = document.getElementById('scan-warning');
-const dimWidth          = document.getElementById('dim-width');
-const dimHeight         = document.getElementById('dim-height');
-const dimDepth          = document.getElementById('dim-depth');
-const dimKnown          = document.getElementById('dim-known');
-const dimAxis           = document.getElementById('dim-axis');
-const reAnalyseBtn      = document.getElementById('re-analyse-btn');
+// Phase-2 elements
+const captureCanvas    = document.getElementById('scan-capture');
+const analysisMsg      = document.getElementById('scan-analysis-msg');
+
+// Phase-3 elements
+const frozenCanvas     = document.getElementById('scan-frozen');
+const dotSvg           = document.getElementById('dot-svg');
+const scanWarning      = document.getElementById('scan-warning');
+const resetPtsBtn      = document.getElementById('reset-pts-btn');
+const addPtBtn         = document.getElementById('add-pt-btn');
+const removePtBtn      = document.getElementById('remove-pt-btn');
+const confirmShapeBtn  = document.getElementById('confirm-shape-btn');
+const editHint         = document.getElementById('edit-hint');
+
+// Phase-4 elements
+const dimWidth      = document.getElementById('dim-width');
+const dimHeight     = document.getElementById('dim-height');
+const dimDepth      = document.getElementById('dim-depth');
+const dimUnitLabels = document.querySelectorAll('#phase-scale .dim-unit');
+const unitOptBtns   = document.querySelectorAll('#unit-toggle .unit-opt');
+const useDimsBtn    = document.getElementById('use-dims-btn');
+const backToEditBtn = document.getElementById('back-to-edit-btn');
+
+// Step indicator dots
+const stepEls = document.querySelectorAll('.scan-step');
 
 /* ── State ────────────────────────────────────────────────────────────────── */
-let mediaStream   = null;
-let guideAnimRAF  = null;
-let lastB64       = null;        // most recent captured frame (for re-analyse)
+let mediaStream      = null;
+let lastB64          = null;   // base64 of captured frame
+let autoPoints       = [];     // original detected points [{x,y} in 0-1 pct space]
+let currentPoints    = [];     // working copy (user may drag)
+let bboxPct          = null;   // {x,y,w,h} in 0-1 fractions
+let addPointMode     = false;  // true while "+ Point" is active
+let removePointMode  = false;  // true while "− Point" is active
+let currentUnit      = 'mm';   // 'mm' or 'in'
 
-/* ── Guide overlay animation ─────────────────────────────────────────────── */
-const GUIDE_PAD  = 0.12;        // fraction of each dimension to inset the guide rect
-const DASH_LEN   = 10;
-const DASH_GAP   = 6;
-let   dashOffset = 0;
+const MM_PER_IN = 25.4;
+function toDisplay(mm)   { return currentUnit === 'in' ? +(mm  / MM_PER_IN).toFixed(3) : +mm.toFixed(1); }
+function toMm(display)   { return currentUnit === 'in' ? display * MM_PER_IN : display; }
 
-function drawGuide() {
-  const ctx = guideCanvas.getContext('2d');
-  const w   = guideCanvas.width;
-  const h   = guideCanvas.height;
-  ctx.clearRect(0, 0, w, h);
+/* ── Helpers: show / hide (CSS-override-proof) ───────────────────────────── */
+function hide(el) { if (el) { el.hidden = true;  el.style.display = 'none'; } }
+function show(el, d = '') { if (el) { el.hidden = false; el.style.display = d; } }
 
-  const x  = w * GUIDE_PAD;
-  const y  = h * GUIDE_PAD;
-  const rw = w * (1 - 2 * GUIDE_PAD);
-  const rh = h * (1 - 2 * GUIDE_PAD);
-
-  ctx.save();
-  ctx.strokeStyle = 'rgba(245,158,11,0.85)';
-  ctx.lineWidth   = 2;
-  ctx.setLineDash([DASH_LEN, DASH_GAP]);
-  ctx.lineDashOffset = -(dashOffset % (DASH_LEN + DASH_GAP));
-  ctx.strokeRect(x, y, rw, rh);
-
-  // Corner accents
-  const cs = 18;
-  ctx.setLineDash([]);
-  ctx.strokeStyle = 'rgba(245,158,11,1)';
-  ctx.lineWidth   = 3;
-  const corners = [
-    [[x, y + cs], [x, y], [x + cs, y]],
-    [[x + rw - cs, y], [x + rw, y], [x + rw, y + cs]],
-    [[x, y + rh - cs], [x, y + rh], [x + cs, y + rh]],
-    [[x + rw - cs, y + rh], [x + rw, y + rh], [x + rw - cs, y + rh]],
-  ];
-  corners.forEach(([a, b, c]) => {
-    ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(...c); ctx.stroke();
-  });
-  ctx.restore();
-
-  dashOffset += 0.5;
-  guideAnimRAF = requestAnimationFrame(drawGuide);
+function setStep(n) {
+  stepEls.forEach(el => el.classList.toggle('active', +el.dataset.step === n));
 }
 
-function startGuide() {
-  syncCanvasSize(guideCanvas);
-  drawGuide();
+function showPhase(phase) {
+  [phaseLive, phaseAnalysis, phaseEdit, phaseScale].forEach(hide);
+  show(phase);
 }
 
-function stopGuide() {
-  if (guideAnimRAF) { cancelAnimationFrame(guideAnimRAF); guideAnimRAF = null; }
-}
+/* ── Overlay helpers ─────────────────────────────────────────────────────── */
+function showOverlay(msg) { overlayMsg.textContent = msg; show(overlayMsg); }
+function hideOverlay()     { hide(overlayMsg); }
 
-function syncCanvasSize(canvas) {
-  canvas.width  = canvas.offsetWidth;
-  canvas.height = canvas.offsetHeight;
-}
-
-/* ── Camera stream ───────────────────────────────────────────────────────── */
+/* ── Camera ──────────────────────────────────────────────────────────────── */
 async function startCamera() {
   showOverlay('Starting camera…');
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },  // rear cam on mobile
-        width:  { ideal: 1280 },
-        height: { ideal: 960 },
-      },
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 960 } },
       audio: false,
     });
     scanVideo.srcObject = mediaStream;
     await scanVideo.play();
     hideOverlay();
-    startGuide();
   } catch (err) {
     showOverlay(
       err.name === 'NotAllowedError'
-        ? '📷 Camera access denied. Allow camera access in your browser settings and try again.'
+        ? '📷 Camera access denied. Allow camera access and try again.'
         : `📷 Could not open camera: ${err.message}`
     );
-    ctrlsLive.hidden = true;
+    hide(analyzeBtn);
   }
 }
 
 function stopCamera() {
-  stopGuide();
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => t.stop());
     mediaStream = null;
@@ -140,232 +113,364 @@ function stopCamera() {
 
 /* ── Open / close modal ──────────────────────────────────────────────────── */
 function openModal() {
-  scanModal.hidden   = false;
-  scanBackdrop.hidden = false;
+  scanModal.hidden        = false;
+  scanModal.style.display = 'flex';
+  scanBackdrop.hidden        = false;
+  scanBackdrop.style.display = 'block';
   document.body.style.overflow = 'hidden';
-  resetToLivePhase();
-  startCamera();
+  enterLivePhase();
 }
 
 function closeModal() {
   stopCamera();
-  scanModal.hidden   = true;
-  scanBackdrop.hidden = true;
+  scanModal.hidden        = true;
+  scanModal.style.display = 'none';
+  scanBackdrop.hidden        = true;
+  scanBackdrop.style.display = 'none';
   document.body.style.overflow = '';
 }
 
-/* ── Phase transitions ───────────────────────────────────────────────────── */
-function resetToLivePhase() {
-  // Show video, hide capture canvases
-  scanVideo.hidden     = false;
-  guideCanvas.hidden   = false;
-  captureCanvas.hidden = true;
-  contourCanvas.hidden = true;
-
-  // Controls
-  ctrlsLive.hidden     = false;
-  ctrlsAnalysis.hidden = true;
-  ctrlsResult.hidden   = true;
-
-  // Dimensions
-  scanDims.hidden    = true;
-  scanWarning.hidden = true;
-
-  hideOverlay();
+/* ── Phase 1: Live ───────────────────────────────────────────────────────── */
+function enterLivePhase() {
+  showPhase(phaseLive);
+  setStep(1);
   lastB64 = null;
+  autoPoints = [];
+  currentPoints = [];
+  addPointMode = false;
+  removePointMode = false;
+  clearDotSvg();
+  startCamera();
 }
 
-function showAnalysisPhase() {
-  // Hide video, show frozen frame
-  scanVideo.hidden     = true;
-  guideCanvas.hidden   = true;
-  captureCanvas.hidden = false;
-  contourCanvas.hidden = true;
+/* ── Phase 2: Analysis ───────────────────────────────────────────────────── */
+async function enterAnalysisPhase() {
+  // Freeze frame from video using native resolution
+  const w = scanVideo.videoWidth  || 640;
+  const h = scanVideo.videoHeight || 480;
+  captureCanvas.width  = w;
+  captureCanvas.height = h;
+  captureCanvas.getContext('2d').drawImage(scanVideo, 0, 0, w, h);
 
-  ctrlsLive.hidden     = true;
-  ctrlsAnalysis.hidden = false;
-  ctrlsResult.hidden   = true;
-  scanDims.hidden      = true;
-}
+  // Downscale for API POST (max 640px wide)
+  const small = downscale(captureCanvas, 640);
+  lastB64 = small.toDataURL('image/jpeg', 0.85);
 
-function showResultPhase(result) {
-  contourCanvas.hidden = false;
-  ctrlsAnalysis.hidden = true;
-  ctrlsResult.hidden   = false;
-  scanDims.hidden      = false;
+  stopCamera();
+  showPhase(phaseAnalysis);
+  setStep(2);
 
-  // Populate dim inputs
-  dimWidth.value  = result.width_mm  ?? '';
-  dimHeight.value = result.height_mm ?? '';
-  // depth stays at user's previous value (default 80)
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
 
-  // Warning
-  if (result.warning) {
-    scanWarning.textContent = `⚠️ ${result.warning}`;
-    scanWarning.hidden = false;
-  } else {
-    scanWarning.hidden = true;
-  }
-
-  drawContour(result);
-}
-
-/* ── Capture & analyse ───────────────────────────────────────────────────── */
-function captureFrame() {
-  stopGuide();
-  syncCanvasSize(captureCanvas);
-  const ctx = captureCanvas.getContext('2d');
-  ctx.drawImage(scanVideo, 0, 0, captureCanvas.width, captureCanvas.height);
-
-  // Store base64 for re-analysis
-  lastB64 = captureCanvas.toDataURL('image/jpeg', 0.9);
-
-  showAnalysisPhase();
-  runAnalysis(lastB64);
-}
-
-async function runAnalysis(b64) {
-  ctrlsAnalysis.hidden = false;
   try {
-    const res  = await fetch('/api/analyze-tool-image', {
-      method:  'POST',
+    const res = await fetch('/api/analyze-contour', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        image:              b64,
-        known_dimension_mm: parseFloat(dimKnown.value) || 200,
-        known_axis:         dimAxis.value,
+      signal: controller.signal,
+      body: JSON.stringify({ image: lastB64, target_pts: 12 }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    autoPoints    = data.points.map(([x, y]) => ({ x, y }));
+    bboxPct       = data.bounding_box_pct;
+    currentPoints = autoPoints.map(p => ({ ...p }));
+
+    enterEditPhase(data.warning);
+  } catch (err) {
+    clearTimeout(timer);
+    const msg = err.name === 'AbortError'
+      ? 'Analysis timed out — try again against a plain background.'
+      : `Analysis failed: ${err.message}`;
+    // Go back to live with error
+    enterLivePhase();
+    showOverlay(`⚠️ ${msg}`);
+  }
+}
+
+function downscale(src, maxW) {
+  const ratio = Math.min(1, maxW / src.width);
+  const w = Math.round(src.width * ratio);
+  const h = Math.round(src.height * ratio);
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  tmp.getContext('2d').drawImage(src, 0, 0, w, h);
+  return tmp;
+}
+
+/* ── Phase 3: SVG Dot Editor ─────────────────────────────────────────────── */
+function enterEditPhase(warning = null) {
+  showPhase(phaseEdit);
+  setStep(3);
+  // Reset edit modes whenever we enter (re-)edit
+  setAddPointMode(false);
+  setRemovePointMode(false);
+
+  // Draw frozen frame into #scan-frozen (sized to display container)
+  const viewport = document.getElementById('scan-viewport-edit');
+  setTimeout(() => {
+    const dw = viewport.clientWidth  || 480;
+    const dh = Math.round(dw * (captureCanvas.height / captureCanvas.width));
+    frozenCanvas.width  = dw;
+    frozenCanvas.height = dh;
+    frozenCanvas.getContext('2d').drawImage(captureCanvas, 0, 0, dw, dh);
+    renderDotOverlay(dw, dh);
+  }, 50);  // small delay to let layout settle
+
+  if (warning) {
+    scanWarning.textContent = `⚠️ ${warning}`;
+    show(scanWarning);
+  } else {
+    hide(scanWarning);
+  }
+}
+
+function renderDotOverlay(w, h) {
+  clearDotSvg();
+  dotSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  dotSvg.setAttribute('width', w);
+  dotSvg.setAttribute('height', h);
+
+  const ns = 'http://www.w3.org/2000/svg';
+
+  // Closed polyline
+  const poly = document.createElementNS(ns, 'polygon');
+  poly.id = 'dot-polygon';
+  poly.setAttribute('fill', 'rgba(245,158,11,0.15)');
+  poly.setAttribute('stroke', '#f59e0b');
+  poly.setAttribute('stroke-width', '2');
+  poly.setAttribute('stroke-linejoin', 'round');
+  dotSvg.appendChild(poly);
+
+  updatePolygon(w, h);
+
+  // Draggable circles — colour/cursor depends on current mode
+  currentPoints.forEach((pt, i) => {
+    const cx = pt.x * w;
+    const cy = pt.y * h;
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', cx);
+    circle.setAttribute('cy', cy);
+    circle.setAttribute('r', 9);
+    circle.setAttribute('fill',         removePointMode ? '#ef4444' : '#f59e0b');
+    circle.setAttribute('stroke',       '#0e0f11');
+    circle.setAttribute('stroke-width', 2);
+    circle.setAttribute('cursor',       removePointMode ? 'no-drop' : 'grab');
+    circle.dataset.idx = i;
+    makeDraggable(circle, w, h);
+    dotSvg.appendChild(circle);
+  });
+}
+
+function updatePolygon(w, h) {
+  const poly = document.getElementById('dot-polygon');
+  if (!poly) return;
+  const pts = currentPoints.map(p => `${(p.x * w).toFixed(1)},${(p.y * h).toFixed(1)}`).join(' ');
+  poly.setAttribute('points', pts);
+}
+
+function clearDotSvg() {
+  while (dotSvg.firstChild) dotSvg.removeChild(dotSvg.firstChild);
+}
+
+function makeDraggable(circle, svgW, svgH) {
+  let dragging = false;
+  const idx = +circle.dataset.idx;
+
+  circle.addEventListener('pointerdown', e => {
+    // Remove mode: delete this dot (min 3 points)
+    if (removePointMode) {
+      if (currentPoints.length <= 3) return; // enforce minimum
+      currentPoints.splice(idx, 1);
+      renderDotOverlay(svgW, svgH);
+      return;
+    }
+    e.preventDefault();
+    dragging = true;
+    circle.setPointerCapture(e.pointerId);
+    circle.setAttribute('cursor', 'grabbing');
+  });
+
+  circle.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const rect = dotSvg.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top)  / rect.height));
+    currentPoints[idx] = { x, y };
+    circle.setAttribute('cx', x * svgW);
+    circle.setAttribute('cy', y * svgH);
+    updatePolygon(svgW, svgH);
+  });
+
+  circle.addEventListener('pointerup', () => {
+    dragging = false;
+    circle.setAttribute('cursor', removePointMode ? 'no-drop' : 'grab');
+  });
+}
+
+/* ── Phase 4: Scale ──────────────────────────────────────────────────────── */
+function setUnit(unit) {
+  if (unit === currentUnit) return;
+  const factor = unit === 'in' ? 1 / MM_PER_IN : MM_PER_IN;
+  [dimWidth, dimHeight, dimDepth].forEach(inp => {
+    if (inp.value) inp.value = +(parseFloat(inp.value) * factor).toFixed(unit === 'in' ? 3 : 1);
+  });
+  currentUnit = unit;
+  // Update labels
+  dimUnitLabels.forEach(el => el.textContent = unit);
+  // Update step/min/max
+  const isIn = unit === 'in';
+  dimWidth.step  = isIn ? '0.01'  : '0.5';  dimWidth.min  = isIn ? '0.4'   : '10';  dimWidth.max  = isIn ? '24'  : '600';
+  dimHeight.step = isIn ? '0.01'  : '0.5';  dimHeight.min = isIn ? '0.4'   : '10';  dimHeight.max = isIn ? '40'  : '1000';
+  dimDepth.step  = isIn ? '0.01'  : '0.5';  dimDepth.min  = isIn ? '0.4'   : '10';  dimDepth.max  = isIn ? '16'  : '400';
+  // Update toggle button active state
+  unitOptBtns.forEach(b => b.classList.toggle('active', b.dataset.unit === unit));
+}
+
+function enterScalePhase() {
+  showPhase(phaseScale);
+  setStep(4);
+  // Always reset to mm when entering so values are consistent
+  setUnit('mm');
+
+  // Pre-fill W/H from bounding box percentages
+  if (bboxPct) {
+    const ASSUME_HEIGHT_MM = 200;
+    const pxPerMm = bboxPct.h / ASSUME_HEIGHT_MM;
+    dimHeight.value = Math.round(ASSUME_HEIGHT_MM);
+    dimWidth.value  = Math.round(bboxPct.w / pxPerMm);
+  }
+  if (!dimDepth.value) dimDepth.value = 80;
+}
+
+/* ── Use Dimensions → generate STL directly ──────────────────────────────── */
+async function useDimensions() {
+  // Always send mm to the API, convert from display unit if needed
+  const w = toMm(parseFloat(dimWidth.value)  || toDisplay(150));
+  const h = toMm(parseFloat(dimHeight.value) || toDisplay(200));
+  const d = toMm(parseFloat(dimDepth.value)  || toDisplay(80));
+
+  // Read mounting system from the scan modal's own picker
+  const mountingRadio = document.querySelector('input[name="scan_mounting"]:checked');
+  const mountingSystem = mountingRadio ? mountingRadio.value : 'blank';
+
+  useDimsBtn.disabled = true;
+  useDimsBtn.textContent = 'Generating…';
+
+  try {
+    const genRes = await fetch('/api/generate-from-dims', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        width_mm: w, height_mm: h, depth_mm: d,
+        mounting_system: mountingSystem,
+        label: 'scanned_tool',
       }),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${res.status}`);
-    }
-    const result = await res.json();
-    showResultPhase(result);
+    if (!genRes.ok) throw new Error(`Generate failed: ${genRes.status}`);
+    const { filename } = await genRes.json();
+
+    // Trigger file download
+    const dlRes = await fetch(`/api/download/${encodeURIComponent(filename)}`);
+    if (!dlRes.ok) throw new Error(`Download failed: ${dlRes.status}`);
+    const blob = await dlRes.blob();
+    const url  = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
+    URL.revokeObjectURL(url);
+
+    closeModal();
   } catch (err) {
-    ctrlsAnalysis.hidden = true;
-    ctrlsResult.hidden   = true;
-    scanWarning.textContent = `⚠️ Analysis failed: ${err.message}. Retake the photo against a plain background.`;
-    scanWarning.hidden      = false;
-    scanDims.hidden         = false;
-    ctrlsResult.hidden      = false;  // still allow retake
+    alert(`⚠️ ${err.message}`);
+  } finally {
+    useDimsBtn.disabled = false;
+    useDimsBtn.textContent = 'Use These Dimensions';
   }
 }
 
-/* ── Contour overlay ─────────────────────────────────────────────────────── */
-function drawContour(result) {
-  syncCanvasSize(contourCanvas);
-  const ctx  = contourCanvas.getContext('2d');
-  ctx.clearRect(0, 0, contourCanvas.width, contourCanvas.height);
-
-  const scaleX = contourCanvas.width  / captureCanvas.width;
-  const scaleY = contourCanvas.height / captureCanvas.height;
-
-  // Contour polygon
-  const pts = result.contour_points;
-  if (pts && pts.length > 1) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pts[0][0] * scaleX, pts[0][1] * scaleY);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i][0] * scaleX, pts[i][1] * scaleY);
-    }
-    ctx.closePath();
-    ctx.strokeStyle = 'rgba(245,158,11,0.9)';
-    ctx.lineWidth   = 2.5;
-    ctx.stroke();
-    ctx.fillStyle   = 'rgba(245,158,11,0.07)';
-    ctx.fill();
-    ctx.restore();
-  }
-
-  // Bounding box
-  const bb = result.bounding_box;
-  if (bb) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(52,211,153,0.7)';
-    ctx.lineWidth   = 1.5;
-    ctx.setLineDash([4, 4]);
-    ctx.strokeRect(bb.x * scaleX, bb.y * scaleY, bb.w * scaleX, bb.h * scaleY);
-    ctx.restore();
-  }
-
-  // Confidence badge
-  const conf  = result.confidence ?? 0;
-  const color = conf >= 0.6 ? '#34d399' : '#f87171';
-  ctx.save();
-  ctx.font      = 'bold 12px Inter, sans-serif';
-  ctx.fillStyle = color;
-  ctx.fillText(`conf: ${(conf * 100).toFixed(0)}%`, 8, 18);
-  ctx.restore();
-}
-
-/* ── "Use These Dimensions" → feed into STL flow ──────────────────────────── */
-function useDimensions() {
-  const w = parseFloat(dimWidth.value)  || 80;
-  const h = parseFloat(dimHeight.value) || 200;
-  const d = parseFloat(dimDepth.value)  || 80;
-
-  // Build a synthetic tool object matching the shape that app.js expects
-  const syntheticTool = {
-    id:               null,
-    brand:            'Custom Scan',
-    model_name:       `Scanned Tool (${w}×${d}×${h} mm)`,
-    tool_type:        'Custom',
-    body_width_mm:    w,
-    body_depth_mm:    d,
-    body_height_mm:   h,
-    handle_diameter_mm: Math.round(d * 0.4),  // rough estimate
-    weight_kg:        null,
-  };
-
-  closeModal();
-
-  // Delegate to the existing app.js function (exposed via globalThis)
-  if (typeof window.snapfitUseTool === 'function') {
-    window.snapfitUseTool(syntheticTool);
-  }
-}
-
-/* ── Overlay helpers ─────────────────────────────────────────────────────── */
-function showOverlay(msg) {
-  overlayMsg.textContent = msg;
-  overlayMsg.hidden = false;
-}
-
-function hideOverlay() {
-  overlayMsg.hidden = true;
-}
-
-/* ── Event listeners ─────────────────────────────────────────────────────── */
+/* ── Event Listeners ─────────────────────────────────────────────────────── */
 scanBtn.addEventListener('click', openModal);
 scanClose.addEventListener('click', closeModal);
 scanBackdrop.addEventListener('click', closeModal);
 
-captureBtn.addEventListener('click', captureFrame);
-
-retakeBtn.addEventListener('click', () => {
-  resetToLivePhase();
-  startCamera();
+analyzeBtn.addEventListener('click', enterAnalysisPhase);
+resetPtsBtn.addEventListener('click', () => {
+  currentPoints = autoPoints.map(p => ({ ...p }));
+  renderDotOverlay(frozenCanvas.width, frozenCanvas.height);
 });
+confirmShapeBtn.addEventListener('click', enterScalePhase);
 
-reAnalyseBtn.addEventListener('click', () => {
-  if (!lastB64) return;
-  showAnalysisPhase();
-  captureCanvas.hidden = false;
-  runAnalysis(lastB64);
+/* ── Add Point mode ─────────────────────────────────────────────────────── */
+function setAddPointMode(active) {
+  addPointMode = active;
+  if (active) setRemovePointMode(false); // mutual exclusion
+  addPtBtn.style.color   = active ? 'var(--amber)' : '';
+  addPtBtn.style.outline = active ? '2px solid var(--amber)' : '';
+  if (!removePointMode) {
+    editHint.innerHTML = active
+      ? '🎯 <strong>Click anywhere</strong> on the image to place a new dot'
+      : 'Drag dots to adjust · click <strong>+ Point</strong> or <strong>− Point</strong> to edit';
+  }
+  dotSvg.style.cursor = active ? 'cell' : 'crosshair';
+}
+
+function setRemovePointMode(active) {
+  removePointMode = active;
+  if (active) setAddPointMode(false); // mutual exclusion
+  removePtBtn.style.color   = active ? '#ef4444' : '';
+  removePtBtn.style.outline = active ? '2px solid #ef4444' : '';
+  // Re-render dots so their cursor/colour reflects the mode
+  renderDotOverlay(frozenCanvas.width, frozenCanvas.height);
+  editHint.innerHTML = active
+    ? '🗑️ <strong>Click a dot</strong> to remove it (minimum 3 remain)'
+    : 'Drag dots to adjust · click <strong>+ Point</strong> or <strong>− Point</strong> to edit';
+  if (active) dotSvg.style.cursor = 'default';
+}
+
+addPtBtn.addEventListener('click', () => setAddPointMode(!addPointMode));
+removePtBtn.addEventListener('click', () => setRemovePointMode(!removePointMode));
+
+/** Find the index i such that inserting after currentPoints[i] minimises
+ *  the perpendicular distance from (px,py) to the segment [i → i+1 mod n]. */
+function nearestEdgeIndex(px, py) {
+  const n = currentPoints.length;
+  let bestIdx = 0, bestDist = Infinity;
+  for (let i = 0; i < n; i++) {
+    const a = currentPoints[i];
+    const b = currentPoints[(i + 1) % n];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 0 ? ((px - a.x) * dx + (py - a.y) * dy) / lenSq : 0;
+    t = Math.max(0, Math.min(1, t));
+    const qx = a.x + t * dx, qy = a.y + t * dy;
+    const dist = Math.hypot(px - qx, py - qy);
+    if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+dotSvg.addEventListener('click', e => {
+  if (!addPointMode) return;
+  const rect = dotSvg.getBoundingClientRect();
+  const px = (e.clientX - rect.left) / rect.width;
+  const py = (e.clientY - rect.top)  / rect.height;
+  const insertAfter = nearestEdgeIndex(px, py);
+  currentPoints.splice(insertAfter + 1, 0, { x: px, y: py });
+  renderDotOverlay(frozenCanvas.width, frozenCanvas.height);
+  // Stay in add-point mode so user can add multiple points in a row
 });
-
+backToEditBtn.addEventListener('click', () => {
+  showPhase(phaseEdit);
+  setStep(3);
+});
+unitOptBtns.forEach(b => b.addEventListener('click', () => setUnit(b.dataset.unit)));
 useDimsBtn.addEventListener('click', useDimensions);
 
-// Escape key closes modal
-document.addEventListener('keydown', (e) => {
+document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !scanModal.hidden) closeModal();
-});
-
-// Resize: keep guide canvas in sync
-window.addEventListener('resize', () => {
-  if (!scanModal.hidden && !guideCanvas.hidden) {
-    syncCanvasSize(guideCanvas);
-  }
 });

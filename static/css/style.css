@@ -615,6 +615,19 @@ body::before {
   margin-bottom: 16px;
 }
 
+/* ── Hidden attribute guard (prevents display:flex/block overriding [hidden]) ── */
+/* Covers ALL scan modal elements so hidden=true is always respected */
+.scan-modal[hidden],
+.scan-backdrop[hidden],
+.scan-overlay-msg[hidden],
+.scan-controls[hidden],
+.scan-dims[hidden],
+.scan-warning[hidden],
+#scan-video[hidden],
+#scan-guide[hidden],
+#scan-capture[hidden],
+#scan-contour[hidden] { display: none !important; }
+
 /* ── Scan-Your-Tool button ─────────────────────────────────────────────────── */
 .btn-scan {
   display: inline-flex;
@@ -866,3 +879,174 @@ body::before {
 
 .scan-cal .select-wrapper::after { right: 10px; }
 
+
+
+/* ── Mounting system selector ─────────────────────────────────────────────── */
+.mount-section { margin-top: 20px; margin-bottom: 4px; }
+
+.mount-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.mount-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color .2s, background .2s, box-shadow .2s;
+  position: relative;
+  gap: 3px;
+}
+
+.mount-card input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.mount-card:hover {
+  background: var(--bg-card-hover);
+  border-color: rgba(245,158,11,0.35);
+}
+
+.mount-card:has(input:checked) {
+  border-color: var(--amber);
+  background: var(--amber-glow);
+  box-shadow: 0 0 0 1px var(--amber);
+}
+
+.mount-icon  { font-size: 20px; line-height: 1; margin-bottom: 4px; }
+.mount-name  { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.mount-desc  { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+
+/* ── Scan wizard: step indicator ──────────────────────────────────────── */
+.scan-steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.scan-step { padding: 2px 8px; border-radius: 20px; transition: all .2s; }
+.scan-step.active {
+  color: var(--amber);
+  background: var(--amber-glow);
+  font-weight: 700;
+}
+.scan-step-sep { opacity: .4; font-size: 10px; }
+
+/* ── Scan phase containers ─────────────────────────────────────────────── */
+.scan-phase { padding: 12px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+.scan-phase[hidden], .scan-phase[style*="display: none"] { display: none !important; }
+
+/* ── SVG overlays (brackets + dot editor) ─────────────────────────────── */
+.scan-svg-overlay {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+#dot-svg { pointer-events: all; }
+
+/* ── Animated corner brackets (Phase 1) ───────────────────────────────── */
+.bracket {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 3;
+  stroke-linecap: round;
+  animation: bracketPulse 2s ease-in-out infinite;
+}
+.bracket:nth-child(2) { animation-delay: .15s; }
+.bracket:nth-child(3) { animation-delay: .3s; }
+.bracket:nth-child(4) { animation-delay: .45s; }
+
+@keyframes bracketPulse {
+  0%, 100% { opacity: .5; stroke-width: 2.5; }
+  50%       { opacity: 1;  stroke-width: 3.5; }
+}
+
+/* ── Viewport for edit phase (auto-height from canvas) ────────────────── */
+.scan-viewport-edit {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: #000;
+}
+.scan-viewport-edit canvas { display: block; width: 100%; height: auto; }
+.scan-viewport-edit svg { pointer-events: all; }
+
+/* ── [hidden] guards for new phase elements ───────────────────────────── */
+#phase-live[hidden], #phase-analysis[hidden],
+#phase-edit[hidden], #phase-scale[hidden] { display: none !important; }
+#scan-video[hidden], #scan-capture[hidden],
+#scan-frozen[hidden], #scan-overlay-msg[hidden],
+#scan-analysis-msg[hidden], #scan-warning[hidden] { display: none !important; }
+
+/* ── mm / in unit toggle pill ─────────────────────────────────────────── */
+.unit-toggle {
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 2px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.unit-opt {
+  background: transparent;
+  border: none;
+  border-radius: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.unit-opt.active {
+  background: var(--amber);
+  color: #000;
+}
+
+/* ── Scan modal mounting system card grid ─────────────────────────────── */
+.scan-mount-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.scan-mount-card {
+  cursor: pointer;
+  display: block;
+}
+.scan-mount-card-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 10px 6px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  transition: border-color .15s, background .15s;
+  text-align: center;
+  user-select: none;
+}
+.scan-mount-card input:checked + .scan-mount-card-inner {
+  border-color: var(--amber);
+  background: var(--amber-glow);
+}
+.scan-mount-card-inner:hover {
+  border-color: var(--amber);
+}
+.scan-mount-icon { font-size: 18px; line-height: 1; }
+.scan-mount-name { font-size: 11px; font-weight: 700; color: var(--text-primary); }
+.scan-mount-desc { font-size: 10px; color: var(--text-secondary); }
+.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+@media (max-width: 400px) {
+  .scan-mount-grid { grid-template-columns: repeat(2, 1fr); }
+}

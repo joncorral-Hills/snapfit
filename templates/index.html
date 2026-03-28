@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SnapFit — Magnetic Tool Holder Configurator</title>
   <meta name="description" content="Generate custom-fit 3D-printable magnetic wall holders for your power tools. Pick your brand, pick your model, download the STL." />
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=12" />
 </head>
 <body>
 
@@ -37,7 +37,7 @@
       </p>
 
       <div class="features">
-        <div class="feature-pill"><span>🧲</span> Neodymium magnet slots (20×6 mm)</div>
+        <div class="feature-pill"><span>🔩</span> 4 mounting systems</div>
         <div class="feature-pill"><span>📐</span> Parametric — sized to your tool</div>
         <div class="feature-pill"><span>🖨️</span> Print on any FDM printer</div>
         <div class="feature-pill"><span>⚡</span> DeWalt · Milwaukee · Ryobi</div>
@@ -142,6 +142,42 @@
           </div>
         </div>
 
+        <!-- Step 2: Mounting system -->
+        <div class="mount-section" id="mount-section" hidden>
+          <div class="section-label" style="margin-bottom:14px;">Step 2 — Choose Mounting System</div>
+          <div class="mount-grid" role="radiogroup" aria-label="Mounting system">
+
+            <label class="mount-card" for="mount-magnetic">
+              <input type="radio" id="mount-magnetic" name="mounting_system" value="magnetic" checked />
+              <span class="mount-icon">🧲</span>
+              <span class="mount-name">Magnetic Panel</span>
+              <span class="mount-desc">Works with any steel panel system</span>
+            </label>
+
+            <label class="mount-card" for="mount-gridfinity">
+              <input type="radio" id="mount-gridfinity" name="mounting_system" value="gridfinity" />
+              <span class="mount-icon">⬡</span>
+              <span class="mount-name">Gridfinity</span>
+              <span class="mount-desc">42mm grid baseplates</span>
+            </label>
+
+            <label class="mount-card" for="mount-multiboard">
+              <input type="radio" id="mount-multiboard" name="mounting_system" value="multiboard" />
+              <span class="mount-icon">⊞</span>
+              <span class="mount-name">Multiboard</span>
+              <span class="mount-desc">25mm T-slot grid panels</span>
+            </label>
+
+            <label class="mount-card" for="mount-opengrid">
+              <input type="radio" id="mount-opengrid" name="mounting_system" value="opengrid" />
+              <span class="mount-icon">⊡</span>
+              <span class="mount-name">OpenGrid</span>
+              <span class="mount-desc">50mm peg panel system</span>
+            </label>
+
+          </div>
+        </div>
+
         <!-- Download button -->
         <button id="download-btn" class="btn btn-primary" disabled aria-label="Generate and download STL holder">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -202,6 +238,7 @@
   </footer>
 
   <!-- ── Camera Scan Modal ─────────────────────────────────────────────── -->
+  <!-- ── Scan Modal — 5-phase wizard ──────────────────────────────────────── -->
   <div id="scan-modal" class="scan-modal" role="dialog" aria-modal="true"
        aria-labelledby="scan-modal-title" hidden>
     <div class="scan-modal-inner">
@@ -213,117 +250,175 @@
             <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
             <circle cx="12" cy="13" r="4"/>
           </svg>
-          Scan Your Tool
+          <span id="scan-modal-title-text">Scan Your Tool</span>
         </h2>
-        <button class="scan-close" id="scan-close" aria-label="Close camera scanner">✕</button>
+        <button class="scan-close" id="scan-close" aria-label="Close scanner">✕</button>
       </div>
 
-      <!-- Tip -->
-      <div class="scan-tip" id="scan-tip">
-        💡 For best results, hold your tool against a <strong>white wall or light surface</strong>
-        and make sure the whole tool is visible.
+      <!-- Step indicator -->
+      <div class="scan-steps" id="scan-steps">
+        <span class="scan-step active" data-step="1">1 Live</span>
+        <span class="scan-step-sep">›</span>
+        <span class="scan-step" data-step="2">2 Outline</span>
+        <span class="scan-step-sep">›</span>
+        <span class="scan-step" data-step="3">3 Adjust</span>
+        <span class="scan-step-sep">›</span>
+        <span class="scan-step" data-step="4">4 Scale</span>
       </div>
 
-      <!-- Camera / capture area -->
-      <div class="scan-viewport" id="scan-viewport">
-        <!-- Live video feed -->
-        <video id="scan-video" class="scan-video" autoplay playsinline muted></video>
-        <!-- Guide overlay drawn on top of video (dashed rect) -->
-        <canvas id="scan-guide" class="scan-canvas scan-canvas-guide"></canvas>
-        <!-- Frozen capture frame (shown after Capture) -->
-        <canvas id="scan-capture" class="scan-canvas" hidden></canvas>
-        <!-- Contour overlay (drawn after analysis) -->
-        <canvas id="scan-contour" class="scan-canvas" hidden></canvas>
-        <!-- Error/loading overlay -->
-        <div class="scan-overlay-msg" id="scan-overlay-msg" hidden></div>
-      </div>
-
-      <!-- Controls: live phase -->
-      <div class="scan-controls" id="scan-controls-live">
-        <button id="capture-btn" class="btn btn-primary" style="max-width:220px;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+      <!-- ── PHASE 1: Live camera ────────────────────────────────────────── -->
+      <div id="phase-live" class="scan-phase">
+        <div class="scan-tip">
+          💡 Hold your tool against a <strong>light background</strong> and make sure the whole tool is visible.
+        </div>
+        <div class="scan-viewport" id="scan-viewport">
+          <video id="scan-video" class="scan-video" autoplay playsinline muted></video>
+          <!-- Animated corner-bracket overlay -->
+          <svg id="scan-brackets" class="scan-svg-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <path class="bracket" d="M12,25 L12,12 L25,12"/>
+            <path class="bracket" d="M75,12 L88,12 L88,25"/>
+            <path class="bracket" d="M88,75 L88,88 L75,88"/>
+            <path class="bracket" d="M25,88 L12,88 L12,75"/>
           </svg>
-          Capture
-        </button>
-      </div>
-
-      <!-- Controls: analysis phase -->
-      <div class="scan-controls" id="scan-controls-analysis" hidden>
-        <div class="scan-spinner-wrap" id="scan-spinner-wrap">
-          <div class="spinner" style="width:20px;height:20px;"></div>
-          <span style="color:var(--amber);font-size:13px;">Analysing silhouette…</span>
+          <div class="scan-overlay-msg" id="scan-overlay-msg" hidden></div>
+        </div>
+        <div class="scan-controls">
+          <button id="analyze-btn" class="btn btn-primary" style="max-width:240px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Analyze Object
+          </button>
         </div>
       </div>
 
-      <!-- Controls: result phase -->
-      <div class="scan-controls" id="scan-controls-result" hidden>
-        <button id="retake-btn" class="btn btn-secondary" style="flex:1;">
-          ↩ Retake
-        </button>
-        <button id="use-dims-btn" class="btn btn-primary" style="flex:2;">
-          Use These Dimensions
-        </button>
+      <!-- ── PHASE 2: Analysis spinner ──────────────────────────────────── -->
+      <div id="phase-analysis" class="scan-phase" hidden>
+        <div class="scan-viewport" id="scan-viewport-analysis">
+          <canvas id="scan-capture" class="scan-canvas"></canvas>
+          <div class="scan-overlay-msg" id="scan-analysis-msg" style="display:flex;">
+            <div class="spinner" style="width:22px;height:22px;margin-right:10px;"></div>
+            Detecting outline…
+          </div>
+        </div>
       </div>
 
-      <!-- Dimension editor (shown after successful analysis) -->
-      <div class="scan-dims" id="scan-dims" hidden>
-        <div class="scan-dims-title">Detected Dimensions — edit if needed</div>
+      <!-- ── PHASE 3: SVG Dot Editor ────────────────────────────────────── -->
+      <div id="phase-edit" class="scan-phase" hidden>
+        <div class="scan-viewport scan-viewport-edit" id="scan-viewport-edit">
+          <canvas id="scan-frozen" class="scan-canvas"></canvas>
+          <!-- SVG overlay for draggable polygon dots -->
+          <svg id="dot-svg" class="scan-svg-overlay" style="cursor:crosshair;"></svg>
+        </div>
         <div class="scan-warning" id="scan-warning" hidden></div>
-        <div class="scan-dims-grid">
+        <div class="scan-controls scan-controls-edit">
+          <button id="reset-pts-btn" class="btn btn-secondary" style="flex:1;">↺ Reset</button>
+          <button id="add-pt-btn"    class="btn btn-secondary" style="flex:1;" title="Click image to add a point">+ Point</button>
+          <button id="remove-pt-btn" class="btn btn-secondary" style="flex:1;" title="Click a dot to remove it">− Point</button>
+          <button id="confirm-shape-btn" class="btn btn-primary" style="flex:2;">Confirm Shape →</button>
+        </div>
+        <div id="edit-hint" style="text-align:center;font-size:11px;color:var(--text-secondary);margin-top:4px;">
+          Drag dots to adjust · click <strong>+ Point</strong> then tap outline to add
+        </div>
+      </div>
+
+      <!-- ── PHASE 4: Scale inputs ──────────────────────────────────────── -->
+      <div id="phase-scale" class="scan-phase" hidden>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <div class="scan-tip" style="margin:0;flex:1;">
+            📐 Confirm your tool's real measurements. Width &amp; Height are estimated from the outline.
+          </div>
+          <!-- mm / in pill toggle -->
+          <div class="unit-toggle" id="unit-toggle" title="Switch between mm and inches">
+            <button class="unit-opt active" data-unit="mm">mm</button>
+            <button class="unit-opt"        data-unit="in">in</button>
+          </div>
+        </div>
+        <div class="scan-dims-grid" style="margin-top:12px;">
           <div class="scan-dim-item">
             <label class="form-label" for="dim-width">Width</label>
             <div class="dim-input-wrap">
-              <input type="number" id="dim-width" class="form-input" step="0.5" min="10" max="600" />
+              <input type="number" id="dim-width" class="form-input" step="0.5" min="10" max="600"/>
               <span class="dim-unit">mm</span>
             </div>
           </div>
           <div class="scan-dim-item">
             <label class="form-label" for="dim-height">Height</label>
             <div class="dim-input-wrap">
-              <input type="number" id="dim-height" class="form-input" step="0.5" min="10" max="1000" />
+              <input type="number" id="dim-height" class="form-input" step="0.5" min="10" max="1000"/>
               <span class="dim-unit">mm</span>
             </div>
           </div>
           <div class="scan-dim-item">
-            <label class="form-label" for="dim-depth">Depth
-              <span style="color:var(--text-muted);font-weight:400;"> (manual)</span>
-            </label>
+            <label class="form-label" for="dim-depth">Depth <span style="color:var(--text-secondary);font-weight:400;">(measure front-to-back)</span></label>
             <div class="dim-input-wrap">
-              <input type="number" id="dim-depth" class="form-input" step="0.5" min="10" max="400" value="80" />
+              <input type="number" id="dim-depth" class="form-input" step="0.5" min="10" max="400" value="80"/>
               <span class="dim-unit">mm</span>
             </div>
           </div>
         </div>
-        <!-- Calibration hint -->
-        <div class="scan-cal">
-          <span style="color:var(--text-muted);font-size:12px;">Calibration — your tool's known length:</span>
-          <div class="dim-input-wrap" style="max-width:160px;">
-            <input type="number" id="dim-known" class="form-input" step="1" min="10" max="2000" value="200" />
-            <span class="dim-unit">mm</span>
+
+        <!-- Mounting system picker -->
+        <div style="margin-top:16px;">
+          <div class="form-label" style="margin-bottom:8px;">Mounting System</div>
+          <div class="scan-mount-grid" id="scan-mount-grid">
+
+            <label class="scan-mount-card">
+              <input type="radio" name="scan_mounting" value="gridfinity" class="sr-only"/>
+              <div class="scan-mount-card-inner">
+                <span class="scan-mount-icon">⊞</span>
+                <span class="scan-mount-name">Gridfinity</span>
+                <span class="scan-mount-desc">42mm grid</span>
+              </div>
+            </label>
+
+            <label class="scan-mount-card">
+              <input type="radio" name="scan_mounting" value="opengrid" class="sr-only"/>
+              <div class="scan-mount-card-inner">
+                <span class="scan-mount-icon">⊡</span>
+                <span class="scan-mount-name">OpenGrid</span>
+                <span class="scan-mount-desc">50mm pegs</span>
+              </div>
+            </label>
+
+            <label class="scan-mount-card">
+              <input type="radio" name="scan_mounting" value="multiboard" class="sr-only"/>
+              <div class="scan-mount-card-inner">
+                <span class="scan-mount-icon">⊟</span>
+                <span class="scan-mount-name">Multiboard</span>
+                <span class="scan-mount-desc">25mm T-slot</span>
+              </div>
+            </label>
+
+            <label class="scan-mount-card">
+              <input type="radio" name="scan_mounting" value="blank" checked class="sr-only"/>
+              <div class="scan-mount-card-inner">
+                <span class="scan-mount-icon">▭</span>
+                <span class="scan-mount-name">Blank</span>
+                <span class="scan-mount-desc">flat back</span>
+              </div>
+            </label>
+
           </div>
-          <div class="select-wrapper" style="max-width:120px;">
-            <select id="dim-axis" class="form-select">
-              <option value="height">height</option>
-              <option value="width">width</option>
-            </select>
-          </div>
-          <button id="re-analyse-btn" class="btn btn-secondary" style="padding:10px 18px;font-size:13px;">Re-analyse</button>
         </div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-          Depth can't be captured from a single photo. Default 80 mm is a reasonable placeholder.
+
+        <div class="scan-controls" style="margin-top:16px;">
+          <button id="back-to-edit-btn" class="btn btn-secondary" style="flex:1;">← Back</button>
+          <button id="use-dims-btn" class="btn btn-primary" style="flex:2;">Generate STL ↓</button>
+        </div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:8px;text-align:center;">
+          Depth can't be inferred from a photo. Default 80 mm is a common power tool depth.
         </div>
       </div>
 
+
     </div>
   </div>
-  <!-- ── Scan Backdrop ──────────────────────────────────────────────────── -->
+  <!-- ── Scan Backdrop ─────────────────────────────────────────────────────── -->
   <div class="scan-backdrop" id="scan-backdrop" hidden></div>
 
-  <!-- ── Toast ──────────────────────────────────────────────────────────── -->
+  <!-- ── Toast ──────────────────────────────────────────────────────────────── -->
   <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 
-  <script src="/static/js/app.js"></script>
-  <script src="/static/js/camera.js"></script>
+  <script src="/static/js/app.js?v=11"></script>
+  <script src="/static/js/camera.js?v=13"></script>
 </body>
 </html>

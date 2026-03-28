@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Optional
 
 from pydantic import BaseModel
@@ -19,8 +20,8 @@ from sqlalchemy.orm import Session
 from database import engine, get_db
 from models import Base, Tool, ToolSubmission
 from seed import seed
-from stl_generator import OUTPUT_DIR, generate_holder
-from image_analyzer import analyze_tool_image
+from stl_generator import OUTPUT_DIR, MountingSystem, generate_holder
+from image_analyzer import analyze_tool_image, extract_polygon_points
 
 logger = logging.getLogger(__name__)
 
@@ -99,15 +100,52 @@ async def get_tool(
     return JSONResponse(content=tool.to_dict())
 
 
+class GenerateRequest(BaseModel):
+    mounting_system: MountingSystem = "magnetic"
+
+
 @app.post("/api/generate/{tool_id}")
 async def generate_stl(
-    tool_id: int, db: Annotated[Session, Depends(get_db)]
+    tool_id: int,
+    body: GenerateRequest,
+    db: Annotated[Session, Depends(get_db)],
 ) -> JSONResponse:
-    """Generate holder STL for tool_id, return the filename."""
+    """Generate holder STL for tool_id with the selected mounting_system."""
     tool = db.get(Tool, tool_id)
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
-    stl_path = generate_holder(tool)
+    stl_path = generate_holder(tool, body.mounting_system)
+    return JSONResponse(content={"filename": stl_path.name})
+
+
+class GenerateFromDimsRequest(BaseModel):
+    """Request body for scanned/custom tools that have no DB entry."""
+    width_mm:         float
+    height_mm:        float
+    depth_mm:         float = 80.0
+    mounting_system:  MountingSystem = "magnetic"
+    label:            str = "custom"
+
+
+@app.post("/api/generate-from-dims")
+async def generate_from_dims(body: GenerateFromDimsRequest) -> JSONResponse:
+    """Generate a holder STL from raw dimensions (no DB lookup required).
+
+    Used by the camera scanner flow where the tool has been measured but
+    hasn't been saved to the database.
+    """
+    tool = SimpleNamespace(
+        body_width_mm=body.width_mm,
+        body_height_mm=body.height_mm,
+        body_depth_mm=body.depth_mm,
+        model_name=body.label,
+        brand="Scanned",
+    )
+    try:
+        stl_path = generate_holder(tool, body.mounting_system)
+    except Exception as exc:
+        logger.exception("generate_from_dims failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return JSONResponse(content={"filename": stl_path.name})
 
 
@@ -156,7 +194,32 @@ async def analyze_tool_image_endpoint(body: ToolImageRequest) -> JSONResponse:
     return JSONResponse(content=result)
 
 
-@app.post("/api/submit")
+class ContourRequest(BaseModel):
+    """Request body for POST /api/analyze-contour."""
+    image: str           # base64-encoded JPEG/PNG
+    target_pts: int = 12 # target number of polygon control points (4-16)
+
+
+@app.post("/api/analyze-contour")
+async def analyze_contour_endpoint(body: ContourRequest) -> JSONResponse:
+    """Return a simplified polygon outline (8-16 XY points in 0-1 fraction space).
+
+    Used by the Step 2 SVG dot editor to display draggable control points
+    over the frozen camera frame.
+    """
+    try:
+        result = extract_polygon_points(
+            b64_image=body.image,
+            target_pts=max(4, min(body.target_pts, 16)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Unexpected error in analyze_contour")
+        raise HTTPException(status_code=500, detail="Contour analysis failed.") from exc
+    return JSONResponse(content=result)
+
+
 async def submit_tool(
     brand: Annotated[str, Form()],
     model_name: Annotated[str, Form()],
@@ -168,16 +231,6 @@ async def submit_tool(
     db.add(submission)
     db.commit()
     return JSONResponse(content={"status": "received", "message": "Thanks! We'll review your submission."})
-
-
-# ── Stripe stub (placeholder for future paid downloads) ───────────────────────
-# @app.post("/api/checkout")
-# async def create_checkout_session(tool_id: int) -> JSONResponse:
-#     # TODO: Stripe integration
-#     # import stripe
-#     # stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-#     # session = stripe.checkout.Session.create(...)
-#     raise HTTPException(status_code=501, detail="Payments not yet implemented")
 
 
 # ── Admin routes ──────────────────────────────────────────────────────────────

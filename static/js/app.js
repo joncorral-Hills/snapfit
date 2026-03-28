@@ -1,9 +1,8 @@
-/* ── App JS for SnapFit configurator ── */
-
 const brandSelect   = document.getElementById('brand-select');
 const modelSelect   = document.getElementById('model-select');
 const downloadBtn   = document.getElementById('download-btn');
 const specCard      = document.getElementById('spec-card');
+const mountSection  = document.getElementById('mount-section');
 const statusBar     = document.getElementById('status-bar');
 const statusText    = document.getElementById('status-text');
 const toast         = document.getElementById('toast');
@@ -15,6 +14,41 @@ const searchClear   = document.getElementById('search-clear');
 
 let selectedTool = null;
 let toastTimer   = null;
+
+// ── Mounting system helpers ───────────────────────────────────────────────────
+function getMountingSystem() {
+  const checked = document.querySelector('input[name="mounting_system"]:checked');
+  return checked ? checked.value : 'magnetic';
+}
+
+const MOUNT_LABELS = {
+  magnetic:   'Magnetic Panel',
+  gridfinity: 'Gridfinity',
+  multiboard: 'Multiboard',
+  opengrid:   'OpenGrid',
+};
+
+function updateDownloadLabel() {
+  const sys   = getMountingSystem();
+  const label = MOUNT_LABELS[sys] || 'STL';
+  downloadBtn.querySelector('svg').nextSibling.textContent = ` Generate ${label} STL`;
+  // rewrite as text node cleanly
+  const textNodes = [...downloadBtn.childNodes].filter(n => n.nodeType === 3);
+  textNodes.forEach(n => n.remove());
+  downloadBtn.insertAdjacentText('beforeend', ` Generate ${label} STL`);
+}
+
+// Update label when radio changes
+document.querySelectorAll('input[name="mounting_system"]').forEach(radio => {
+  radio.addEventListener('change', updateDownloadLabel);
+});
+
+function showMountSection() {
+  if (mountSection) {
+    mountSection.hidden = false;
+    mountSection.style.display = '';
+  }
+}
 
 // ── Toast helper ──────────────────────────────────────────────────────────────
 function showToast(msg, type = 'success') {
@@ -108,6 +142,8 @@ modelSelect.addEventListener('change', () => {
   }
   selectedTool = JSON.parse(selected.dataset.tool);
   renderSpec(selectedTool);
+  showMountSection();
+  updateDownloadLabel();
   downloadBtn.disabled = false;
 });
 
@@ -121,7 +157,12 @@ downloadBtn.addEventListener('click', async () => {
 
   try {
     // 1. Trigger generation
-    const genRes = await fetch(`/api/generate/${selectedTool.id}`, { method: 'POST' });
+    const mountingSystem = getMountingSystem();
+    const genRes = await fetch(`/api/generate/${selectedTool.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mounting_system: mountingSystem }),
+    });
     if (!genRes.ok) throw new Error(`Generate failed: ${genRes.status}`);
     const { filename } = await genRes.json();
 
@@ -180,6 +221,8 @@ function closeSearch() {
 function selectToolFromSearch(tool) {
   selectedTool = tool;
   renderSpec(tool);
+  showMountSection();
+  updateDownloadLabel();
   downloadBtn.disabled = false;
   // Reset dropdowns so they don't show a stale selection from a prior pick
   brandSelect.value = '';

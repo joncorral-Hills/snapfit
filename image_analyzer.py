@@ -205,3 +205,74 @@ def _simplify_contour(contour: np.ndarray, max_pts: int = MAX_CONTOUR_PTS) -> li
         points = points[::step][:max_pts]
 
     return [[int(p[0]), int(p[1])] for p in points]
+
+
+def extract_polygon_points(
+    b64_image: str,
+    target_pts: int = 12,
+) -> dict:
+    """Return a simplified polygon outline of the largest object in the image.
+
+    Uses adaptive Douglas-Peucker: increases epsilon until the contour is
+    reduced to approximately *target_pts* control points (capped at 16).
+
+    Points are returned as **fractions of image dimensions** (0.0–1.0) so
+    the frontend can scale them to any display size without knowing the
+    capture resolution.
+
+    Returns:
+        {
+          "points":        [[x_pct, y_pct], ...],   # 0-1 fractions
+          "confidence":    float,
+          "bounding_box_pct": {"x","y","w","h"},     # all 0-1 fractions
+          "image_width":   int,   # pixels (for reference)
+          "image_height":  int,
+          "warning":       str | None,
+        }
+    """
+    img = _decode_image(b64_image)
+    ih, iw = img.shape[:2]
+
+    gray, blurred = _preprocess(img)
+    edges  = _detect_edges(blurred)
+    closed = _close_edges(edges)
+
+    contour, bbox = _largest_contour(closed)
+    x, y, w, h = bbox
+
+    confidence = _compute_confidence(contour, w, h, img.shape)
+    warning = (
+        "Low confidence — retake photo against a plain, high-contrast background."
+        if confidence < CONFIDENCE_WARN_THRESHOLD else None
+    )
+
+    # ── Adaptive RDP: increase epsilon until ≤ target_pts remain ─────────────
+    target = max(4, min(target_pts, 16))
+    perimeter = cv2.arcLength(contour, closed=True)
+    epsilon   = 0.005 * perimeter  # start tight
+    for _ in range(30):
+        simplified = cv2.approxPolyDP(contour, epsilon, closed=True)
+        if len(simplified) <= target:
+            break
+        epsilon *= 1.3
+    else:
+        # Hard cap: subsample evenly
+        pts_arr = simplified.reshape(-1, 2)
+        step = max(1, len(pts_arr) // target)
+        simplified = pts_arr[::step][:target].reshape(-1, 1, 2)
+
+    pts = simplified.reshape(-1, 2)
+    points_pct = [[round(float(p[0]) / iw, 4), round(float(p[1]) / ih, 4)]
+                  for p in pts]
+
+    return {
+        "points":    points_pct,
+        "confidence": round(float(confidence), 3),
+        "bounding_box_pct": {
+            "x": round(x / iw, 4), "y": round(y / ih, 4),
+            "w": round(w / iw, 4), "h": round(h / ih, 4),
+        },
+        "image_width":  iw,
+        "image_height": ih,
+        "warning": warning,
+    }
