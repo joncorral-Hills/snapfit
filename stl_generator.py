@@ -339,8 +339,7 @@ def _build_cutout_bin(
 ) -> List[np.ndarray]:
     """
     Generalized solid rectangular cutout-bin for any mounting system.
-    Identical geometry to _build_gridfinity_cutout_bin() but bin height is
-    cavity_depth + GF_BIN_FLOOR (no Gridfinity Z-unit snapping).
+    Bin height = cavity_depth + GF_BIN_FLOOR (no Gridfinity Z-unit snapping).
     Surfaces: 4 outer walls, bin floor slab, annular top deck, cavity walls, cavity floor.
     """
     bin_h = cavity_depth + GF_BIN_FLOOR
@@ -349,24 +348,18 @@ def _build_cutout_bin(
     z_cav = z_top - cavity_depth
 
     tris: List[np.ndarray] = []
-
-    # 4 outer walls
     tris += [
-        _box_faces(0,             0,            z_bot, W,             GF_BIN_WALL, z_top),
-        _box_faces(0,             D-GF_BIN_WALL, z_bot, W,            D,           z_top),
-        _box_faces(0,             0,            z_bot, GF_BIN_WALL,   D,           z_top),
-        _box_faces(W-GF_BIN_WALL, 0,            z_bot, W,             D,           z_top),
+        _box_faces(0,             0,             z_bot, W,             GF_BIN_WALL, z_top),
+        _box_faces(0,             D-GF_BIN_WALL, z_bot, W,             D,           z_top),
+        _box_faces(0,             0,             z_bot, GF_BIN_WALL,   D,           z_top),
+        _box_faces(W-GF_BIN_WALL, 0,             z_bot, W,             D,           z_top),
     ]
-
-    # Bin floor slab (z_bot → cavity floor)
     tris.append(_box_faces(GF_BIN_WALL, GF_BIN_WALL, z_bot,
                            W-GF_BIN_WALL, D-GF_BIN_WALL, z_cav))
 
-    # Top deck: outer rect minus cavity polygon (annular face)
     poly_ccw = _ensure_ccw(cavity_poly)
     tris.extend(_triangulate_annular_top(W, D, poly_ccw, z_top))
 
-    # Cavity walls
     n = len(poly_ccw)
     for i in range(n):
         x0, y0 = poly_ccw[i]
@@ -376,7 +369,6 @@ def _build_cutout_bin(
             [[x0,y0,z_cav],[x0,y0,z_top],[x1,y1,z_top]],
         ], dtype=np.float32))
 
-    # Cavity floor (fan from centroid, normal up into cavity)
     cx = sum(p[0] for p in poly_ccw) / n
     cy = sum(p[1] for p in poly_ccw) / n
     for i in range(n):
@@ -384,6 +376,7 @@ def _build_cutout_bin(
         tris.append(np.array([[[cx,cy,z_cav],[x1,y1,z_cav],[x0,y0,z_cav]]], dtype=np.float32))
 
     return tris
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
