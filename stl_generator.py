@@ -330,6 +330,62 @@ def _default_rect_cavity(W: float, D: float) -> List[Tuple[float, float]]:
     return [(m,m), (W-m,m), (W-m,D-m), (m,D-m)]
 
 
+def _build_cutout_bin(
+    W: float,
+    D: float,
+    cavity_poly: List[Tuple[float, float]],
+    z_base: float,
+    cavity_depth: float = CAVITY_DEPTH,
+) -> List[np.ndarray]:
+    """
+    Generalized solid rectangular cutout-bin for any mounting system.
+    Identical geometry to _build_gridfinity_cutout_bin() but bin height is
+    cavity_depth + GF_BIN_FLOOR (no Gridfinity Z-unit snapping).
+    Surfaces: 4 outer walls, bin floor slab, annular top deck, cavity walls, cavity floor.
+    """
+    bin_h = cavity_depth + GF_BIN_FLOOR
+    z_bot = z_base
+    z_top = z_bot + bin_h
+    z_cav = z_top - cavity_depth
+
+    tris: List[np.ndarray] = []
+
+    # 4 outer walls
+    tris += [
+        _box_faces(0,             0,            z_bot, W,             GF_BIN_WALL, z_top),
+        _box_faces(0,             D-GF_BIN_WALL, z_bot, W,            D,           z_top),
+        _box_faces(0,             0,            z_bot, GF_BIN_WALL,   D,           z_top),
+        _box_faces(W-GF_BIN_WALL, 0,            z_bot, W,             D,           z_top),
+    ]
+
+    # Bin floor slab (z_bot → cavity floor)
+    tris.append(_box_faces(GF_BIN_WALL, GF_BIN_WALL, z_bot,
+                           W-GF_BIN_WALL, D-GF_BIN_WALL, z_cav))
+
+    # Top deck: outer rect minus cavity polygon (annular face)
+    poly_ccw = _ensure_ccw(cavity_poly)
+    tris.extend(_triangulate_annular_top(W, D, poly_ccw, z_top))
+
+    # Cavity walls
+    n = len(poly_ccw)
+    for i in range(n):
+        x0, y0 = poly_ccw[i]
+        x1, y1 = poly_ccw[(i+1) % n]
+        tris.append(np.array([
+            [[x0,y0,z_cav],[x1,y1,z_top],[x1,y1,z_cav]],
+            [[x0,y0,z_cav],[x0,y0,z_top],[x1,y1,z_top]],
+        ], dtype=np.float32))
+
+    # Cavity floor (fan from centroid, normal up into cavity)
+    cx = sum(p[0] for p in poly_ccw) / n
+    cy = sum(p[1] for p in poly_ccw) / n
+    for i in range(n):
+        x0,y0 = poly_ccw[i]; x1,y1 = poly_ccw[(i+1)%n]
+        tris.append(np.array([[[cx,cy,z_cav],[x1,y1,z_cav],[x0,y0,z_cav]]], dtype=np.float32))
+
+    return tris
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Back plate builders — one per wall-mount system
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -384,23 +440,29 @@ def _build_back_gridfinity(h_width: float,
 
 def _build_back_multiboard(h_width: float,
                             h_height: float) -> Tuple[List[np.ndarray], float]:
+    """Flat slab + T-slot boss pegs protruding from the BACK face (z < 0)."""
     tris: List[np.ndarray] = [_box_faces(0,0,0,h_width,h_height,MB_SLAB)]
     x = MB_EDGE
     while x <= h_width-MB_EDGE+0.1:
         y = MB_EDGE
         while y <= h_height-MB_EDGE+0.1:
-            tris.append(_cylinder_faces(x,y,MB_SLAB,MB_SLAB+1.5,MB_HOLE_D/2,16)); y += MB_GRID
+            # Pegs protrude behind the slab to engage Multiboard T-slot holes
+            tris.append(_cylinder_faces(x, y, -MB_HOLE_D/2, 0, MB_HOLE_D/2, 16))
+            y += MB_GRID
         x += MB_GRID
     return tris, MB_SLAB
 
 def _build_back_opengrid(h_width: float,
                           h_height: float) -> Tuple[List[np.ndarray], float]:
+    """Flat slab + peg sockets protruding from the BACK face (z < 0)."""
     tris: List[np.ndarray] = [_box_faces(0,0,0,h_width,h_height,OG_SLAB)]
     x = OG_EDGE
     while x <= h_width-OG_EDGE+0.1:
         y = OG_EDGE
         while y <= h_height-OG_EDGE+0.1:
-            tris.append(_cylinder_faces(x,y,OG_SLAB,OG_SLAB+OG_PEG_DEPTH,OG_PEG_D/2,20)); y += OG_GRID
+            # Pegs protrude behind the slab to engage OpenGrid wall panel holes
+            tris.append(_cylinder_faces(x, y, -OG_PEG_DEPTH, 0, OG_PEG_D/2, 20))
+            y += OG_GRID
         x += OG_GRID
     return tris, OG_SLAB
 
@@ -450,16 +512,17 @@ def generate_holder(
 
         triangles.extend(_build_gridfinity_cutout_bin(n_x, n_y, poly, z_base))
 
-    # ── ALL OTHER SYSTEMS: wall-mount cradle path ─────────────────────────────
+    # ── ALL OTHER SYSTEMS: system-specific back plate + shared cutout bin ────────
     else:
+        W, D = h_width, h_height
         if mounting_system == "multiboard":
-            base_tris, z_off = _build_back_multiboard(h_width, h_height)
+            base_tris, z_off = _build_back_multiboard(W, D)
         elif mounting_system == "opengrid":
-            base_tris, z_off = _build_back_opengrid(h_width, h_height)
+            base_tris, z_off = _build_back_opengrid(W, D)
         elif mounting_system == "blank":
-            base_tris = _build_back_blank(h_width, h_height); z_off = 0.0
+            base_tris = _build_back_blank(W, D); z_off = WALL
         else:  # magnetic
-            base_tris = _build_back_magnetic(h_width, h_height); z_off = 0.0
+            base_tris = _build_back_magnetic(W, D); z_off = WALL
 
         triangles.extend(base_tris)
 
@@ -467,9 +530,13 @@ def generate_holder(
             bbox_x = getattr(tool, "bbox_x", 0)
             bbox_y = getattr(tool, "bbox_y", 0)
             poly = _contour_to_mm_polygon(contour_points, px_per_mm, bbox_x, bbox_y)
-            triangles.extend(_build_contour_cradle(poly, h_width, h_height, h_depth, z_off))
+            poly = _offset_polygon_outward(poly, CAVITY_TOL)
+            poly = _center_polygon(poly, W, D)
+            poly = _clamp_polygon(poly, W, D, GF_BIN_WALL + 1.5)
         else:
-            triangles.extend(_build_cradle(h_width, h_height, h_depth, z_off))
+            poly = _default_rect_cavity(W, D)
+
+        triangles.extend(_build_cutout_bin(W, D, poly, z_off))
 
     holder_mesh = _build_mesh(triangles)
     safe_brand = tool.brand.replace(" ","_").lower()
