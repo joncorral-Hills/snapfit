@@ -6,7 +6,7 @@ import os
 import secrets
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from pydantic import BaseModel
 
@@ -125,6 +125,10 @@ class GenerateFromDimsRequest(BaseModel):
     depth_mm:         float = 80.0
     mounting_system:  MountingSystem = "magnetic"
     label:            str = "custom"
+    # Optional contour from the SVG editor — list of [x_mm, y_mm] points.
+    # Send in mm-space directly (px_per_mm=1.0); camera.js converts before POST.
+    contour_points:   Optional[List[List[float]]] = None
+    px_per_mm:        float = 1.0  # 1.0 when contour_points are already in mm
 
 
 @app.post("/api/generate-from-dims")
@@ -132,7 +136,8 @@ async def generate_from_dims(body: GenerateFromDimsRequest) -> JSONResponse:
     """Generate a holder STL from raw dimensions (no DB lookup required).
 
     Used by the camera scanner flow where the tool has been measured but
-    hasn't been saved to the database.
+    hasn't been saved to the database. Pass contour_points (mm-space) to get
+    a silhouette-shaped cradle instead of a plain rectangle.
     """
     tool = SimpleNamespace(
         body_width_mm=body.width_mm,
@@ -140,9 +145,16 @@ async def generate_from_dims(body: GenerateFromDimsRequest) -> JSONResponse:
         body_depth_mm=body.depth_mm,
         model_name=body.label,
         brand="Scanned",
+        bbox_x=0,
+        bbox_y=0,
     )
     try:
-        stl_path = generate_holder(tool, body.mounting_system)
+        stl_path = generate_holder(
+            tool,
+            body.mounting_system,
+            contour_points=body.contour_points,
+            px_per_mm=body.px_per_mm if body.contour_points else None,
+        )
     except Exception as exc:
         logger.exception("generate_from_dims failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

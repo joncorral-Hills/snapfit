@@ -361,6 +361,17 @@ async function useDimensions() {
   useDimsBtn.disabled = true;
   useDimsBtn.textContent = 'Generating…';
 
+  // Convert normalized SVG polygon (0-1 fraction space) → mm-space for the STL generator.
+  // Multiply each point by the real-world bounding box size so the generator receives
+  // absolute mm coordinates. We pass px_per_mm=1.0 to signal they're already in mm.
+  let contourPayload = null;
+  if (currentPoints && currentPoints.length >= 3) {
+    contourPayload = currentPoints.map(p => [
+      +(p.x * w).toFixed(2),
+      +(p.y * h).toFixed(2),
+    ]);
+  }
+
   try {
     const genRes = await fetch('/api/generate-from-dims', {
       method: 'POST',
@@ -369,6 +380,7 @@ async function useDimensions() {
         width_mm: w, height_mm: h, depth_mm: d,
         mounting_system: mountingSystem,
         label: 'scanned_tool',
+        ...(contourPayload ? { contour_points: contourPayload, px_per_mm: 1.0 } : {}),
       }),
     });
     if (!genRes.ok) throw new Error(`Generate failed: ${genRes.status}`);

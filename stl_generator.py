@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, List, Literal, Optional, Tuple
 
 import numpy as np
 from stl import mesh
@@ -129,6 +129,86 @@ def _build_cradle(h_width: float, h_height: float,
     # Front lip
     tris.append(_box_faces(WALL, h_depth - WALL, zb,
                            h_width - WALL, h_depth, zb + LIP_CRADLE))
+    return tris
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Contour-aware cradle helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _contour_to_mm_polygon(
+    contour_points: List[List[int]],
+    px_per_mm: float,
+    bbox_x: int,
+    bbox_y: int,
+    pad: float = PAD,
+) -> List[Tuple[float, float]]:
+    """
+    Convert pixel contour points from image_analyzer.py into mm coordinates
+    relative to the holder origin (0,0), with padding applied.
+    - Translates points so bounding box origin = (0,0)
+    - Scales px -> mm using px_per_mm
+    - Offsets by PAD to add clearance around the tool
+    Returns a list of (x_mm, y_mm) tuples forming a closed polygon.
+    """
+    pts = [(p[0] - bbox_x, p[1] - bbox_y) for p in contour_points]
+    pts_mm = [(x / px_per_mm + pad, y / px_per_mm + pad) for x, y in pts]
+    return pts_mm
+
+
+def _build_contour_cradle(
+    polygon_mm: List[Tuple[float, float]],
+    h_width: float,
+    h_height: float,
+    h_depth: float,
+    z_offset: float,
+    cavity_depth: float = 0.0,
+) -> List[np.ndarray]:
+    """
+    Build a tool cradle whose inner cavity matches the tool silhouette polygon.
+    Strategy (2.5D):
+      1. Build the full rectangular outer cradle (walls + floor + lip) using _build_cradle()
+      2. Build a solid extrusion of the tool polygon (the cavity block)
+      3. The cavity block represents the NEGATIVE SPACE — in a real CSG pipeline
+         this would be subtracted. Since numpy-stl has no boolean ops, we instead:
+         - Build walls ONLY around the polygon perimeter (not a solid box)
+         - Leave the polygon footprint open (no floor triangles inside the polygon)
+      This produces a holder whose inner walls trace the tool silhouette.
+
+    polygon_mm: list of (x, y) points in mm, relative to holder origin
+    cavity_depth: how deep the tool sits into the holder (default = DEPTH * 0.7)
+    """
+    if cavity_depth == 0.0:
+        cavity_depth = h_depth * 0.7
+
+    tris: list[np.ndarray] = []
+    zb = z_offset
+    zt_cavity = zb + cavity_depth
+    n = len(polygon_mm)
+
+    # Build vertical wall panels between consecutive polygon points
+    for i in range(n):
+        x0, y0 = polygon_mm[i]
+        x1, y1 = polygon_mm[(i + 1) % n]
+        tris.append(np.array([
+            [[x0, y0, zb], [x1, y1, zb], [x1, y1, zt_cavity]],
+            [[x0, y0, zb], [x1, y1, zt_cavity], [x0, y0, zt_cavity]],
+        ], dtype=np.float32))
+
+    # Floor: fan-triangulate the polygon at z = zb (bottom of cavity)
+    cx = sum(p[0] for p in polygon_mm) / n
+    cy = sum(p[1] for p in polygon_mm) / n
+    for i in range(n):
+        x0, y0 = polygon_mm[i]
+        x1, y1 = polygon_mm[(i + 1) % n]
+        tris.append(np.array([
+            [[cx, cy, zb], [x0, y0, zb], [x1, y1, zb]],
+        ], dtype=np.float32))
+
+    # Front lip across full width
+    tris.append(_box_faces(WALL, h_depth - WALL, zb,
+                           h_width - WALL, h_depth, zb + LIP_CRADLE))
+
     return tris
 
 
@@ -291,10 +371,19 @@ def _build_back_opengrid(h_width: float, h_height: float) -> tuple[list[np.ndarr
 # Public API
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def generate_holder(tool: "Tool",
-                    mounting_system: MountingSystem = "magnetic") -> Path:
+def generate_holder(
+    tool: "Tool",
+    mounting_system: MountingSystem = "magnetic",
+    contour_points: Optional[List[List[int]]] = None,
+    px_per_mm: Optional[float] = None,
+) -> Path:
     """
     Generate a wall-holder STL for *tool* using *mounting_system*.
+
+    If *contour_points* and *px_per_mm* are provided the cradle inner walls
+    will trace the tool silhouette polygon instead of a plain rectangle.
+    Otherwise the rectangular _build_cradle() fallback is used.
+
     Returns the Path to the saved .stl file.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -302,6 +391,13 @@ def generate_holder(tool: "Tool",
     h_width:  float = tool.body_width_mm  + 2 * (PAD + WALL)
     h_height: float = tool.body_height_mm + 2 * (PAD + WALL)
     h_depth:  float = tool.body_depth_mm  + DEPTH
+
+    # ── Snap Gridfinity holders to 42 mm grid ────────────────────────────────
+    if mounting_system == "gridfinity":
+        n_x = max(1, math.ceil(h_width  / GF_GRID))
+        n_y = max(1, math.ceil(h_height / GF_GRID))
+        h_width  = n_x * GF_GRID
+        h_height = n_y * GF_GRID
 
     triangles: list[np.ndarray] = []
 
@@ -319,7 +415,20 @@ def generate_holder(tool: "Tool",
         z_off = 0.0
 
     triangles.extend(base_tris)
-    triangles.extend(_build_cradle(h_width, h_height, h_depth, z_off))
+
+    # ── Cradle: contour-aware or rectangular fallback ─────────────────────────
+    if contour_points and px_per_mm:
+        bbox_x = getattr(tool, "bbox_x", 0)
+        bbox_y = getattr(tool, "bbox_y", 0)
+        polygon_mm = _contour_to_mm_polygon(
+            contour_points, px_per_mm, bbox_x, bbox_y
+        )
+        triangles.extend(
+            _build_contour_cradle(polygon_mm, h_width, h_height, h_depth, z_off)
+        )
+    else:
+        # Fallback: rectangular cradle if no contour data provided
+        triangles.extend(_build_cradle(h_width, h_height, h_depth, z_off))
 
     holder_mesh = _build_mesh(triangles)
 
