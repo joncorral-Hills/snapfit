@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from database import engine, get_db
 from models import Base, Tool, ToolSubmission
 from seed import seed
-from stl_generator import OUTPUT_DIR, MountingSystem, generate_holder
+from stl_generator import OUTPUT_DIR, MountingSystem, generate_holder, _validate_stl
 from image_analyzer import analyze_tool_image, extract_polygon_points
 
 logger = logging.getLogger(__name__)
@@ -158,7 +158,43 @@ async def generate_from_dims(body: GenerateFromDimsRequest) -> JSONResponse:
     except Exception as exc:
         logger.exception("generate_from_dims failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return JSONResponse(content={"filename": stl_path.name})
+    validation = _validate_stl(stl_path)
+    return JSONResponse(content={"filename": stl_path.name, "validation": validation})
+
+
+class SaveScannedToolRequest(BaseModel):
+    """Save a scanned tool to the catalog after STL generation."""
+    brand:              str
+    model_name:         str
+    tool_type:          str = "Scanned Tool"
+    width_mm:           float
+    height_mm:          float
+    depth_mm:           float = 80.0
+    handle_diameter_mm: float = 40.0
+    weight_kg:          float = 1.0
+
+
+@app.post("/api/save-scanned-tool")
+async def save_scanned_tool(
+    body: SaveScannedToolRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> JSONResponse:
+    """Persist a scanned tool to the DB so it appears in the main catalog."""
+    tool = Tool(
+        brand=body.brand,
+        model_name=body.model_name,
+        tool_type=body.tool_type,
+        body_width_mm=body.width_mm,
+        body_height_mm=body.height_mm,
+        body_depth_mm=body.depth_mm,
+        handle_diameter_mm=body.handle_diameter_mm,
+        weight_kg=body.weight_kg,
+    )
+    db.add(tool)
+    db.commit()
+    db.refresh(tool)
+    return JSONResponse(content={"status": "saved", "tool_id": tool.id,
+                                  "tool": tool.to_dict()})
 
 
 @app.get("/api/download/{filename}")

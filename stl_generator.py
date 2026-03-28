@@ -92,6 +92,41 @@ def _build_mesh(tris: List[np.ndarray]) -> mesh.Mesh:
     return m
 
 
+def _validate_stl(path: "Path") -> dict:
+    """
+    Quick watertight check on a saved STL file.
+    Returns dict with is_valid, triangle_count, degenerate_count, open_edge_count.
+    Samples up to 8 000 triangles for the edge-manifold test (fast enough for UI).
+    """
+    try:
+        from collections import Counter
+        m = mesh.Mesh.from_file(str(path))
+        v0, v1, v2 = m.vectors[:,0], m.vectors[:,1], m.vectors[:,2]
+        areas = 0.5 * np.linalg.norm(np.cross(v1-v0, v2-v0), axis=1)
+        degenerate = int(np.sum(areas < 1e-6))
+
+        sample = m.vectors[:min(8000, len(m.vectors))]
+        edge_cnt: Counter = Counter()
+        for tri in sample:
+            for i in range(3):
+                a = tuple(np.round(tri[i], 1))
+                b = tuple(np.round(tri[(i+1)%3], 1))
+                edge_cnt[(min(a,b), max(a,b))] += 1
+        open_edges = sum(1 for v in edge_cnt.values() if v != 2)
+
+        ok = degenerate == 0 and open_edges == 0
+        return {
+            "is_valid": ok,
+            "triangle_count": len(m.vectors),
+            "degenerate_count": degenerate,
+            "open_edge_count": open_edges,
+            "warning": None if ok else f"{degenerate} degenerate, {open_edges} open edges",
+        }
+    except Exception as exc:
+        return {"is_valid": False, "warning": str(exc),
+                "triangle_count": 0, "degenerate_count": 0, "open_edge_count": 0}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Wall-mount cradle helpers
 # ═══════════════════════════════════════════════════════════════════════════════

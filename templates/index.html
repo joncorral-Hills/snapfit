@@ -264,6 +264,8 @@
         <span class="scan-step" data-step="3">3 Adjust</span>
         <span class="scan-step-sep">›</span>
         <span class="scan-step" data-step="4">4 Scale</span>
+        <span class="scan-step-sep">›</span>
+        <span class="scan-step" data-step="5">5 Preview</span>
       </div>
 
       <!-- ── PHASE 1: Live camera ────────────────────────────────────────── -->
@@ -409,6 +411,41 @@
         </div>
       </div>
 
+      <!-- ── PHASE 5: 3D Preview + Save ───────────────────────────────────── -->
+      <div id="phase-preview" class="scan-phase" hidden>
+
+        <!-- Validation status badge -->
+        <div id="stl-valid-badge" class="stl-valid-badge" hidden></div>
+
+        <!-- Three.js viewport -->
+        <div id="stl-viewport" style="width:100%;height:280px;background:#0d0d12;border-radius:12px;overflow:hidden;position:relative;">
+          <div id="stl-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);font-size:13px;">Loading 3D preview…</div>
+          <canvas id="stl-canvas" style="display:none;width:100%;height:100%;"></canvas>
+        </div>
+        <p style="font-size:11px;color:var(--text-secondary);text-align:center;margin-top:4px;">Drag to rotate · Scroll to zoom</p>
+
+        <!-- Save to catalog -->
+        <div class="save-catalog-box">
+          <div class="form-label" style="margin-bottom:8px;">💾 Save to Catalog <span style="font-weight:400;color:var(--text-secondary)">(optional)</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div>
+              <label class="form-label" style="font-size:11px;" for="save-brand">Brand</label>
+              <input type="text" id="save-brand" class="form-input" placeholder="e.g. Milwaukee"/>
+            </div>
+            <div>
+              <label class="form-label" style="font-size:11px;" for="save-model">Model name</label>
+              <input type="text" id="save-model" class="form-input" placeholder="e.g. 2801-20"/>
+            </div>
+          </div>
+          <button id="save-tool-btn" class="btn btn-secondary" style="width:100%;margin-top:8px;">Save to Catalog</button>
+          <div id="save-status" style="font-size:11px;color:var(--text-secondary);text-align:center;margin-top:4px;min-height:16px;"></div>
+        </div>
+
+        <div class="scan-controls" style="margin-top:12px;">
+          <button id="back-to-scale-btn" class="btn btn-secondary" style="flex:1;">← Back</button>
+          <button id="download-stl-btn" class="btn btn-primary" style="flex:2;">⬇ Download STL</button>
+        </div>
+      </div>
 
     </div>
   </div>
@@ -418,7 +455,10 @@
   <!-- ── Toast ──────────────────────────────────────────────────────────────── -->
   <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="/static/js/app.js?v=11"></script>
-  <script src="/static/js/camera.js?v=14"></script>
+  <script src="/static/js/camera.js?v=15"></script>
 </body>
 </html>

@@ -1,11 +1,11 @@
 /**
  * camera.js — SnapFit 5-phase scan wizard
  *
- * Phase 1 — Live camera  (#phase-live)
- * Phase 2 — Analysis     (#phase-analysis)  POST /api/analyze-contour
- * Phase 3 — Dot editor   (#phase-edit)       SVG draggable polygon
- * Phase 4 — Scale input  (#phase-scale)
- * Phase 5 — (STL preview, future)
+ * Phase 1 — Live camera   (#phase-live)
+ * Phase 2 — Analysis      (#phase-analysis)  POST /api/analyze-contour
+ * Phase 3 — Dot editor    (#phase-edit)       SVG draggable polygon
+ * Phase 4 — Scale input   (#phase-scale)
+ * Phase 5 — 3D Preview   (#phase-preview)    Three.js STL viewer + save
  */
 
 /* ── DOM refs ─────────────────────────────────────────────────────────────── */
@@ -20,6 +20,7 @@ const phaseLive     = document.getElementById('phase-live');
 const phaseAnalysis = document.getElementById('phase-analysis');
 const phaseEdit     = document.getElementById('phase-edit');
 const phaseScale    = document.getElementById('phase-scale');
+const phasePreview  = document.getElementById('phase-preview');
 
 // Phase-1 elements
 const scanVideo    = document.getElementById('scan-video');
@@ -48,6 +49,17 @@ const unitOptBtns   = document.querySelectorAll('#unit-toggle .unit-opt');
 const useDimsBtn    = document.getElementById('use-dims-btn');
 const backToEditBtn = document.getElementById('back-to-edit-btn');
 
+// Phase-5 elements
+const stlValidBadge  = document.getElementById('stl-valid-badge');
+const stlLoading     = document.getElementById('stl-loading');
+const stlCanvas      = document.getElementById('stl-canvas');
+const backToScaleBtn = document.getElementById('back-to-scale-btn');
+const downloadStlBtn = document.getElementById('download-stl-btn');
+const saveToolBtn    = document.getElementById('save-tool-btn');
+const saveBrandEl    = document.getElementById('save-brand');
+const saveModelEl    = document.getElementById('save-model');
+const saveStatusEl   = document.getElementById('save-status');
+
 // Step indicator dots
 const stepEls = document.querySelectorAll('.scan-step');
 
@@ -57,9 +69,12 @@ let lastB64          = null;   // base64 of captured frame
 let autoPoints       = [];     // original detected points [{x,y} in 0-1 pct space]
 let currentPoints    = [];     // working copy (user may drag)
 let bboxPct          = null;   // {x,y,w,h} in 0-1 fractions
-let addPointMode     = false;  // true while "+ Point" is active
-let removePointMode  = false;  // true while "− Point" is active
-let currentUnit      = 'mm';   // 'mm' or 'in'
+let addPointMode     = false;
+let removePointMode  = false;
+let currentUnit      = 'mm';
+let lastFilename     = null;   // most recently generated STL filename
+let lastDims         = null;   // {w, h, d} in mm at time of generation
+let stlThreeRenderer = null;   // Three.js WebGL renderer (kept for disposal)
 
 const MM_PER_IN = 25.4;
 function toDisplay(mm)   { return currentUnit === 'in' ? +(mm  / MM_PER_IN).toFixed(3) : +mm.toFixed(1); }
@@ -74,7 +89,7 @@ function setStep(n) {
 }
 
 function showPhase(phase) {
-  [phaseLive, phaseAnalysis, phaseEdit, phaseScale].forEach(hide);
+  [phaseLive, phaseAnalysis, phaseEdit, phaseScale, phasePreview].forEach(hide);
   show(phase);
 }
 
@@ -347,23 +362,17 @@ function enterScalePhase() {
   if (!dimDepth.value) dimDepth.value = 80;
 }
 
-/* ── Use Dimensions → generate STL directly ──────────────────────────────── */
+/* ── Use Dimensions → generate STL → Phase 5 ─────────────────────────────── */
 async function useDimensions() {
-  // Always send mm to the API, convert from display unit if needed
   const w = toMm(parseFloat(dimWidth.value)  || toDisplay(150));
   const h = toMm(parseFloat(dimHeight.value) || toDisplay(200));
   const d = toMm(parseFloat(dimDepth.value)  || toDisplay(80));
-
-  // Read mounting system from the scan modal's own picker
   const mountingRadio = document.querySelector('input[name="scan_mounting"]:checked');
   const mountingSystem = mountingRadio ? mountingRadio.value : 'blank';
 
   useDimsBtn.disabled = true;
   useDimsBtn.textContent = 'Generating…';
 
-  // Convert normalized SVG polygon (0-1 fraction space) → mm-space for the STL generator.
-  // Multiply each point by the real-world bounding box size so the generator receives
-  // absolute mm coordinates. We pass px_per_mm=1.0 to signal they're already in mm.
   let contourPayload = null;
   if (currentPoints && currentPoints.length >= 3) {
     contourPayload = currentPoints.map(p => [
@@ -384,24 +393,139 @@ async function useDimensions() {
       }),
     });
     if (!genRes.ok) throw new Error(`Generate failed: ${genRes.status}`);
-    const { filename } = await genRes.json();
-
-    // Trigger file download
-    const dlRes = await fetch(`/api/download/${encodeURIComponent(filename)}`);
-    if (!dlRes.ok) throw new Error(`Download failed: ${dlRes.status}`);
-    const blob = await dlRes.blob();
-    const url  = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = filename;
-    document.body.appendChild(link); link.click(); link.remove();
-    URL.revokeObjectURL(url);
-
-    closeModal();
+    const data = await genRes.json();
+    lastFilename = data.filename;
+    lastDims = { w, h, d };
+    enterPreviewPhase(data.filename, data.validation);
   } catch (err) {
     alert(`⚠️ ${err.message}`);
   } finally {
     useDimsBtn.disabled = false;
-    useDimsBtn.textContent = 'Use These Dimensions';
+    useDimsBtn.textContent = 'Generate STL ↓';
+  }
+}
+
+/* ── Phase 5 — 3D preview ─────────────────────────────────────────────────── */
+function enterPreviewPhase(filename, validation) {
+  showPhase(phasePreview);
+  setStep(5);
+  saveStatusEl.textContent = '';
+  saveBrandEl.value = '';
+  saveModelEl.value = '';
+  showValidationBadge(validation);
+  loadSTLPreview(filename);
+}
+
+function showValidationBadge(v) {
+  if (!v) { hide(stlValidBadge); return; }
+  stlValidBadge.hidden = false;
+  stlValidBadge.style.display = '';
+  if (v.is_valid) {
+    stlValidBadge.textContent = `✅ ${v.triangle_count.toLocaleString()} triangles — mesh OK`;
+    stlValidBadge.className = 'stl-valid-badge stl-valid-ok';
+  } else {
+    stlValidBadge.textContent = `⚠️ ${v.warning || 'Mesh may have issues'}`;
+    stlValidBadge.className = 'stl-valid-badge stl-valid-warn';
+  }
+}
+
+function loadSTLPreview(filename) {
+  // Dispose old renderer if any
+  if (stlThreeRenderer) { stlThreeRenderer.dispose(); stlThreeRenderer = null; }
+  stlCanvas.style.display = 'none';
+  show(stlLoading);
+
+  const viewport = document.getElementById('stl-viewport');
+  const W = viewport.clientWidth || 400;
+  const H = viewport.clientHeight || 280;
+
+  const scene    = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d0d12);
+  const camera3  = new THREE.PerspectiveCamera(45, W / H, 0.1, 2000);
+  const renderer = new THREE.WebGLRenderer({ canvas: stlCanvas, antialias: true });
+  stlThreeRenderer = renderer;
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir.position.set(1, 2, 3);
+  scene.add(dir);
+  scene.add(new THREE.DirectionalLight(0x8888ff, 0.3).position.set(-1, -1, -1) && dir);
+
+  const controls = new THREE.OrbitControls(camera3, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+
+  const loader = new THREE.STLLoader();
+  loader.load(
+    `/api/download/${encodeURIComponent(filename)}`,
+    (geometry) => {
+      geometry.computeVertexNormals();
+      const mat  = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.6, metalness: 0.1 });
+      const mesh = new THREE.Mesh(geometry, mat);
+      geometry.center();
+      geometry.computeBoundingSphere();
+      const r = geometry.boundingSphere.radius;
+      camera3.position.set(0, r * 0.4, r * 2.5);
+      camera3.lookAt(0, 0, 0);
+      controls.target.set(0, 0, 0);
+      scene.add(mesh);
+      hide(stlLoading);
+      stlCanvas.style.display = 'block';
+
+      let animId;
+      function animate() {
+        animId = requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera3);
+      }
+      animate();
+      // Stop animation when phase leaves view
+      phasePreview._stopAnim = () => cancelAnimationFrame(animId);
+    },
+    undefined,
+    (err) => { stlLoading.textContent = '⚠️ Preview failed — download below still works.'; }
+  );
+}
+
+async function triggerDownload() {
+  if (!lastFilename) return;
+  const dlRes = await fetch(`/api/download/${encodeURIComponent(lastFilename)}`);
+  if (!dlRes.ok) { alert('Download failed'); return; }
+  const blob = await dlRes.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = lastFilename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function saveToolToCatalog() {
+  const brand = saveBrandEl.value.trim();
+  const model = saveModelEl.value.trim();
+  if (!brand || !model) { saveStatusEl.textContent = '⚠️ Enter brand and model name.'; return; }
+  saveToolBtn.disabled = true;
+  saveStatusEl.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/save-scanned-tool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        brand, model_name: model,
+        width_mm: lastDims?.w || 150,
+        height_mm: lastDims?.h || 200,
+        depth_mm:  lastDims?.d || 80,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    saveStatusEl.style.color = 'var(--amber)';
+    saveStatusEl.textContent = `✅ Saved as "${data.tool.brand} ${data.tool.model_name}" (ID ${data.tool_id})`;
+    saveToolBtn.textContent = 'Saved ✓';
+  } catch (err) {
+    saveStatusEl.textContent = `❌ ${err.message}`;
+    saveToolBtn.disabled = false;
   }
 }
 
@@ -482,6 +606,14 @@ backToEditBtn.addEventListener('click', () => {
 });
 unitOptBtns.forEach(b => b.addEventListener('click', () => setUnit(b.dataset.unit)));
 useDimsBtn.addEventListener('click', useDimensions);
+
+backToScaleBtn.addEventListener('click', () => {
+  if (phasePreview._stopAnim) phasePreview._stopAnim();
+  showPhase(phaseScale);
+  setStep(4);
+});
+downloadStlBtn.addEventListener('click', triggerDownload);
+saveToolBtn.addEventListener('click', saveToolToCatalog);
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !scanModal.hidden) closeModal();
