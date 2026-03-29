@@ -338,28 +338,39 @@ def _build_cutout_bin(
     cavity_depth: float = CAVITY_DEPTH,
 ) -> List[np.ndarray]:
     """
-    Generalized solid rectangular cutout-bin for any mounting system.
-    Bin height = cavity_depth + GF_BIN_FLOOR (no Gridfinity Z-unit snapping).
-    Surfaces: 4 outer walls, bin floor slab, annular top deck, cavity walls, cavity floor.
+    Solid rectangular cutout-bin for any mounting system.
+    The bin body starts at z=0 (not z=z_base) so there is no separate slab
+    junction; mounting features (pegs, magnets) live below z=0 and the bin
+    body IS the base plate.  z_base is kept as a parameter so that
+    generate_holder() can pass the slab thickness; internally it adjusts the
+    cavity depth so the tray top is z = z_base + bin_h.
+    Surfaces: 4 outer walls, bin floor slab, annular top deck, cavity walls,
+    cavity floor, bottom face (closes z=0).
     """
-    bin_h = cavity_depth + GF_BIN_FLOOR
-    z_bot = z_base
-    z_top = z_bot + bin_h
+    bin_h = z_base + cavity_depth + GF_BIN_FLOOR  # includes "slab" zone
+    z_bot = 0.0                                    # always start at z=0
+    z_top = bin_h
     z_cav = z_top - cavity_depth
 
     tris: List[np.ndarray] = []
+
+    # 4 outer walls (full height, z=0 → z_top)
     tris += [
         _box_faces(0,             0,             z_bot, W,             GF_BIN_WALL, z_top),
         _box_faces(0,             D-GF_BIN_WALL, z_bot, W,             D,           z_top),
         _box_faces(0,             0,             z_bot, GF_BIN_WALL,   D,           z_top),
         _box_faces(W-GF_BIN_WALL, 0,             z_bot, W,             D,           z_top),
     ]
+
+    # Interior floor slab (z=0 → cavity floor); its bottom at z=0 seals interior
     tris.append(_box_faces(GF_BIN_WALL, GF_BIN_WALL, z_bot,
                            W-GF_BIN_WALL, D-GF_BIN_WALL, z_cav))
 
+    # Annular top deck (outer rect minus cavity polygon)
     poly_ccw = _ensure_ccw(cavity_poly)
     tris.extend(_triangulate_annular_top(W, D, poly_ccw, z_top))
 
+    # Cavity walls (polygon perimeter, z_cav → z_top, normals inward)
     n = len(poly_ccw)
     for i in range(n):
         x0, y0 = poly_ccw[i]
@@ -369,6 +380,7 @@ def _build_cutout_bin(
             [[x0,y0,z_cav],[x0,y0,z_top],[x1,y1,z_top]],
         ], dtype=np.float32))
 
+    # Cavity floor (fan from centroid, normal facing up into cavity)
     cx = sum(p[0] for p in poly_ccw) / n
     cy = sum(p[1] for p in poly_ccw) / n
     for i in range(n):
@@ -383,15 +395,17 @@ def _build_cutout_bin(
 # Back plate builders — one per wall-mount system
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build_back_magnetic(h_width: float, h_height: float) -> List[np.ndarray]:
-    tris: List[np.ndarray] = [_box_faces(0,0,0,h_width,WALL,h_height)]
-    cx = h_width / 2
-    for cz in [h_height/3, 2*h_height/3]:
-        tris.append(_cylinder_faces(cx, 0, cz-MAGNET_D/2, cz+MAGNET_D/2, MAGNET_D/2))
+def _build_back_magnetic(W: float, D: float) -> List[np.ndarray]:
+    """Magnet bosses protruding from bottom face (z < 0). No slab — bin body IS the slab."""
+    tris: List[np.ndarray] = []
+    cx = W / 2
+    for cy_pos in [D / 3, 2 * D / 3]:
+        tris.append(_cylinder_faces(cx, cy_pos, -MAGNET_D / 2, 0, MAGNET_D / 2))
     return tris
 
-def _build_back_blank(h_width: float, h_height: float) -> List[np.ndarray]:
-    return [_box_faces(0,0,0,h_width,WALL,h_height)]
+def _build_back_blank(W: float, D: float) -> List[np.ndarray]:
+    """No mounting features — bin body IS the plate."""
+    return []
 
 def _gf_chamfered_foot(cx: float, cy: float) -> List[np.ndarray]:
     hw = GF_FOOT_W/2; hwt = (GF_FOOT_W-2*GF_CHAMFER)/2; z_s = GF_FOOT_H-GF_CHAMFER
@@ -431,30 +445,26 @@ def _build_back_gridfinity(h_width: float,
             tris.extend(_gf_stacking_lip(ox,oy))
     return tris, GF_FOOT_H + GF_LIP_H
 
-def _build_back_multiboard(h_width: float,
-                            h_height: float) -> Tuple[List[np.ndarray], float]:
-    """Flat slab + T-slot boss pegs protruding from the BACK face (z < 0)."""
-    tris: List[np.ndarray] = [_box_faces(0,0,0,h_width,h_height,MB_SLAB)]
+def _build_back_multiboard(W: float, D: float) -> Tuple[List[np.ndarray], float]:
+    """T-slot boss pegs protruding from bottom face (z < 0). No slab — bin body IS the slab."""
+    tris: List[np.ndarray] = []
     x = MB_EDGE
-    while x <= h_width-MB_EDGE+0.1:
+    while x <= W - MB_EDGE + 0.1:
         y = MB_EDGE
-        while y <= h_height-MB_EDGE+0.1:
-            # Pegs protrude behind the slab to engage Multiboard T-slot holes
-            tris.append(_cylinder_faces(x, y, -MB_HOLE_D/2, 0, MB_HOLE_D/2, 16))
+        while y <= D - MB_EDGE + 0.1:
+            tris.append(_cylinder_faces(x, y, -MB_HOLE_D / 2, 0, MB_HOLE_D / 2, 16))
             y += MB_GRID
         x += MB_GRID
     return tris, MB_SLAB
 
-def _build_back_opengrid(h_width: float,
-                          h_height: float) -> Tuple[List[np.ndarray], float]:
-    """Flat slab + peg sockets protruding from the BACK face (z < 0)."""
-    tris: List[np.ndarray] = [_box_faces(0,0,0,h_width,h_height,OG_SLAB)]
+def _build_back_opengrid(W: float, D: float) -> Tuple[List[np.ndarray], float]:
+    """Peg sockets protruding from bottom face (z < 0). No slab — bin body IS the slab."""
+    tris: List[np.ndarray] = []
     x = OG_EDGE
-    while x <= h_width-OG_EDGE+0.1:
+    while x <= W - OG_EDGE + 0.1:
         y = OG_EDGE
-        while y <= h_height-OG_EDGE+0.1:
-            # Pegs protrude behind the slab to engage OpenGrid wall panel holes
-            tris.append(_cylinder_faces(x, y, -OG_PEG_DEPTH, 0, OG_PEG_D/2, 20))
+        while y <= D - OG_EDGE + 0.1:
+            tris.append(_cylinder_faces(x, y, -OG_PEG_DEPTH, 0, OG_PEG_D / 2, 20))
             y += OG_GRID
         x += OG_GRID
     return tris, OG_SLAB
