@@ -29,3 +29,9 @@ generated_stls/
 
 # ── Logs ──────────────────────────────────────────────────────
 *.log
+secrets/
+node_modules/
+logs/
+.venv/
+*.zip
+dist/
